@@ -1,4 +1,4 @@
-"""Block-wise Mahalanobis monitor with an analytic chi-square threshold."""
+"""Mahalanobis monitors: per-sensor blocks of 8, and one test on all 128 features."""
 
 from __future__ import annotations
 
@@ -137,6 +137,19 @@ class BlockMahalanobisMonitor:
         whitened = np.einsum("bij,bj->bi", self.inv_covs_, residual)
         return np.einsum("bi,bi->b", residual, whitened)
 
+    def block_distances_batch(self, frames: np.ndarray) -> np.ndarray:
+        """Squared Mahalanobis distance per row and block, shape ``(n_rows, n_blocks)``."""
+        self._require_fit()
+        assert self.means_ is not None
+        assert self.inv_covs_ is not None
+        residual = np.asarray(frames, dtype=np.float64).reshape(-1, self.n_blocks, self.block_size) - self.means_
+        whitened = np.einsum("bij,nbj->nbi", self.inv_covs_, residual)
+        return np.einsum("nbi,nbi->nb", residual, whitened)
+
+    def hot_sensors(self, frames: np.ndarray) -> np.ndarray:
+        """Number of blocks over their line, per row. ``tau`` may be one line or one per block."""
+        return np.sum(self.block_distances_batch(frames) > self.tau, axis=1)
+
     def _require_fit(self) -> None:
         if self.means_ is None or self.inv_covs_ is None:
             raise RuntimeError("Monitor must be fit on X_train before inference")
@@ -152,3 +165,46 @@ class BlockMahalanobisMonitor:
         expanded = np.sum((coords * coords) / self.eigvals_, axis=1)
         if not np.allclose(quadratic, expanded, rtol=1e-5, atol=1e-5):
             raise RuntimeError("Mahalanobis quadratic form does not match its eigen-expansion")
+
+
+class FullMahalanobis:
+    """One squared Mahalanobis distance on the whole 128-vector.
+
+    Features are standardized with the training mean and std before the
+    covariance is estimated. The raw features span five orders of magnitude,
+    which made the raw covariance close to singular (condition number around
+    1e14) and the ridge meaningless. The distance itself does not depend on
+    the scaling, so only the numerics change.
+    """
+
+    def __init__(self, system_fpr: float = SYSTEM_FPR, ridge: float = RIDGE) -> None:
+        self.system_fpr = system_fpr
+        self.ridge = ridge
+        self.mu: np.ndarray | None = None
+        self.scale: np.ndarray | None = None
+        self.inv: np.ndarray | None = None
+        self.chi2_tau = 0.0
+        self.tau = 0.0
+
+    def fit(self, x_train: np.ndarray) -> "FullMahalanobis":
+        x_train = np.asarray(x_train, dtype=np.float64)
+        self.mu = x_train.mean(axis=0)
+        self.scale = np.maximum(x_train.std(axis=0), 1e-12)
+        z = (x_train - self.mu) / self.scale
+        cov = np.cov(z, rowvar=False) + self.ridge * np.eye(x_train.shape[1])
+        self.inv = np.linalg.inv(cov)
+        self.chi2_tau = float(chi2.ppf(1.0 - self.system_fpr, df=x_train.shape[1]))
+        self.tau = self.chi2_tau
+        return self
+
+    def distance(self, frame: np.ndarray) -> float:
+        return float(self.distances(np.asarray(frame, dtype=np.float64)[None, :])[0])
+
+    def distances(self, frames: np.ndarray) -> np.ndarray:
+        """Squared distance of each row, shape ``(n_rows,)``."""
+        assert self.mu is not None and self.scale is not None and self.inv is not None
+        z = (np.asarray(frames, dtype=np.float64) - self.mu) / self.scale
+        return np.sum((z @ self.inv) * z, axis=1)
+
+    def alarms(self, frame: np.ndarray) -> bool:
+        return self.distance(frame) > self.tau

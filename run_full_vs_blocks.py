@@ -6,43 +6,13 @@ import time
 
 import numpy as np
 import pandas as pd
-from scipy.stats import chi2
 
+from corruptions import NOISE_SCALES, POISON_FRACTIONS, SENSOR_COUNTS, random_noise, random_poison, sensor_lie
 from data_loader import load_nominal_dataset, split_nominal
-from monitor import SYSTEM_FPR, BlockMahalanobisMonitor
+from monitor import BlockMahalanobisMonitor, FullMahalanobis
 
 SEED = 42
 N_SAMPLES = 500
-RIDGE = 1e-6
-
-
-class FullMahalanobis:
-    """One squared Mahalanobis distance on the whole 128-vector."""
-
-    def __init__(self, system_fpr: float = SYSTEM_FPR, ridge: float = RIDGE) -> None:
-        self.system_fpr = system_fpr
-        self.ridge = ridge
-        self.mu: np.ndarray | None = None
-        self.inv: np.ndarray | None = None
-        self.tau = 0.0
-
-    def fit(self, x_train: np.ndarray) -> "FullMahalanobis":
-        x_train = np.asarray(x_train, dtype=np.float64)
-        self.mu = x_train.mean(axis=0)
-        cov = np.cov(x_train, rowvar=False)
-        cov = cov + self.ridge * np.eye(x_train.shape[1])
-        self.inv = np.linalg.inv(cov)
-        self.chi2_tau = float(chi2.ppf(1.0 - self.system_fpr, df=x_train.shape[1]))
-        self.tau = self.chi2_tau
-        return self
-
-    def distance(self, frame: np.ndarray) -> float:
-        assert self.mu is not None and self.inv is not None
-        residual = np.asarray(frame, dtype=np.float64) - self.mu
-        return float(residual @ self.inv @ residual)
-
-    def alarms(self, frame: np.ndarray) -> bool:
-        return self.distance(frame) > self.tau
 
 
 def _time_us(fn, frames: np.ndarray) -> np.ndarray:
@@ -56,22 +26,16 @@ def _time_us(fn, frames: np.ndarray) -> np.ndarray:
 
 
 def _make_variants(base: np.ndarray, donors: np.ndarray, blocks: BlockMahalanobisMonitor, seed: int):
-    """The corruption library from run_random_catch, as (name, frames) pairs.
-
-    This replaces the missing ``library_variants.make_variants``.
-    """
-    # Imported here: run_random_catch imports FullMahalanobis from this module.
-    from run_random_catch import NOISE_SCALES, POISON_FRACTIONS, SENSOR_COUNTS, _random_noise, _random_poison, _sensor_lie
-
+    """The corruption library from corruptions.py, as (name, frames) pairs."""
     rng = np.random.default_rng(seed)
     std = np.maximum(blocks.feature_std_, 1e-8)
     variants: list[tuple[str, np.ndarray]] = []
     for scale in NOISE_SCALES:
-        variants.append((f"noise {scale:.2f} std", _random_noise(base, std, scale, rng)))
+        variants.append((f"noise {scale:.2f} std", random_noise(base, std, scale, rng)))
     for fraction in POISON_FRACTIONS:
-        variants.append((f"feature lie {int(fraction * 100)}%", _random_poison(base, donors, fraction, rng)))
+        variants.append((f"feature lie {int(fraction * 100)}%", random_poison(base, donors, fraction, rng)))
     for count in SENSOR_COUNTS:
-        variants.append((f"sensor lie {count}", _sensor_lie(base, donors, count, blocks.block_size, rng)))
+        variants.append((f"sensor lie {count}", sensor_lie(base, donors, count, blocks.block_size, rng)))
     return variants
 
 
