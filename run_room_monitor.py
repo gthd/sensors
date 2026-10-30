@@ -119,7 +119,7 @@ def _alarms_by_occupancy(setup: Setup, occupancy: np.ndarray) -> None:
     rows = []
     for detector in setup.detectors:
         for method in setup.methods:
-            surprise, counter, cutoff, length = tuned_detector(setup, minutes, detector, "empirical", method)
+            surprise, counter, cutoff, length, _ = tuned_detector(setup, minutes, detector, "empirical", method)
             n_train = int(round(0.70 * len(setup.values)))
             starts = window_starts(setup.stamps, length, n_train, len(setup.values), setup.step_seconds)
             starts = np.setdiff1d(starts, calibration_half(setup, length))
