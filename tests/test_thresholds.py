@@ -23,3 +23,11 @@ def test_empirical_lines_joint_rate_at_most_target():
 def test_target_must_be_inside_unit_interval(target):
     with pytest.raises(ValueError):
         empirical_line(np.ones(10), target)
+
+
+def test_line_sits_between_tied_values():
+    scores = np.repeat([0.0, 1.0, 4.0, 9.0], [700, 250, 40, 10]).astype(float)
+    line = empirical_line(scores, 0.02)
+    assert 4.0 < line < 9.0
+    assert np.mean(scores > line) == 0.01
+    assert np.mean(scores + 1e-6 > line) == 0.01  # a tiny nudge does not cross it

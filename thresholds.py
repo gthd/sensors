@@ -5,6 +5,12 @@ Gaussian, so the actual clean false-alarm rate was about 8-9% instead of the
 intended 0.1%. Here every line is a quantile of clean calibration scores, so
 the clean alarm rate is whatever ``target`` asks for.
 
+A line sits halfway between the quantile and the next larger clean score,
+not on the quantile itself. Coarse sensors (whole degrees, 0.06 degree
+steps) produce many tied scores, and a line exactly on a tied value lets the
+smallest nudge to any of those rows cross it. Halfway leaves the clean rate
+unchanged, since no clean score lies in between.
+
 Choose ``target`` with the calibration size in mind: a 0.1% line from 2,000
 clean rows rests on two rows. The default of 1% rests on about twenty.
 """
@@ -21,7 +27,7 @@ def empirical_line(scores: np.ndarray, target: float = DEFAULT_TARGET) -> float:
     scores = np.asarray(scores, dtype=np.float64).ravel()
     if not 0.0 < target < 1.0:
         raise ValueError("target must lie strictly between 0 and 1")
-    return float(np.quantile(scores, 1.0 - target, method="higher"))
+    return float(line_between(scores, 1.0 - target))
 
 
 def empirical_lines(scores: np.ndarray, target: float = DEFAULT_TARGET, iters: int = 60) -> np.ndarray:
@@ -53,4 +59,18 @@ def empirical_lines(scores: np.ndarray, target: float = DEFAULT_TARGET, iters: i
 
 
 def _lines_at(scores: np.ndarray, alpha: float) -> np.ndarray:
-    return np.quantile(scores, 1.0 - alpha, axis=0, method="higher")
+    return line_between(scores, 1.0 - alpha)
+
+
+def line_between(scores: np.ndarray, level: float) -> np.ndarray:
+    """Per column, halfway from the ``level`` quantile to the next larger score.
+
+    Scores above the result are exactly the scores above the quantile, so the
+    clean rate is the same; ties at the quantile no longer sit on the line.
+    With no larger score the quantile itself is returned.
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    q = np.quantile(scores, level, axis=0, method="higher")
+    above = np.where(scores > q, scores, np.inf)
+    nxt = above.min(axis=0)
+    return np.where(np.isfinite(nxt), 0.5 * (q + nxt), q)

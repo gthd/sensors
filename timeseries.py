@@ -333,3 +333,37 @@ def _score(seed, features, monitors, threshold, method, target) -> dict[str, flo
     for name, kind, f, was_changed in features["eval"]:
         metrics[name] = _correct(clean & was_changed, f, counter, cutoff, kind)
     return metrics
+
+
+def tuned_detector(setup: Setup, minutes: int, detector: str, threshold: str, method: str, seed: int = SEEDS[0]):
+    """One detector set up exactly as in ``run_experiment`` for one seed.
+
+    Returns ``(surprise, counter, cutoff, length)``. Lines come from the
+    seed's calibration half of the test period and the cutoff is tuned on
+    its corruptions, so the evaluation half stays unseen.
+    """
+    values, stamps = setup.values, setup.stamps
+    n_train = int(round(TRAIN_FRACTION * len(values)))
+    length = TREND_LAGS + minutes + 1
+    train_starts = window_starts(stamps, length, 0, n_train, setup.step_seconds)
+    test_starts = window_starts(stamps, length, n_train, len(values), setup.step_seconds)
+    train_win = windows(values, spread_out(train_starts, FIT_WINDOWS), length)
+    step_std = np.maximum(np.diff(train_win, axis=1)[:, -1, :].std(axis=0), 1e-8)
+    cal, _, tune_sets, _ = corrupted_sets(seed, values, test_starts, length, minutes, train_win, step_std, setup)
+
+    surprise = Surprise(0 if detector == "jump" else TREND_LAGS).fit(train_win)
+    monitors = fit_monitors(surprise(train_win, minutes), values.shape[1], minutes)
+    cal_features = surprise(cal, minutes)
+    set_lines(monitors, cal_features, threshold, setup.target)
+    counter = make_counter(monitors, method)
+    groups = [(kind, surprise(w, minutes)) for _, kind, w in tune_sets]
+    cutoff = _tune_cutoff(cal_features, groups, counter, monitors[0].n_blocks)
+    return surprise, counter, cutoff, length
+
+
+def calibration_half(setup: Setup, length: int, seed: int = SEEDS[0]) -> np.ndarray:
+    """Start indices of the test windows that ``tuned_detector`` calibrated on, for that seed."""
+    n_train = int(round(TRAIN_FRACTION * len(setup.values)))
+    test_starts = window_starts(setup.stamps, length, n_train, len(setup.values), setup.step_seconds)
+    order = np.random.default_rng(seed).permutation(test_starts)
+    return order[: len(order) // 2]

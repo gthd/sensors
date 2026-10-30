@@ -3,3 +3,4 @@ __pycache__/
 .sensors_venv/
 .pytest_cache/
 DatasetHome/
+DatasetRoom/
