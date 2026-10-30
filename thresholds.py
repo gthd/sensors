@@ -67,10 +67,13 @@ def line_between(scores: np.ndarray, level: float) -> np.ndarray:
 
     Scores above the result are exactly the scores above the quantile, so the
     clean rate is the same; ties at the quantile no longer sit on the line.
-    With no larger score the quantile itself is returned.
+    When the quantile is the largest score, the line goes half the gap to the
+    next smaller score above it instead. On coarse sensors the gaps between
+    possible scores only grow, so this stays below the next possible score.
     """
     scores = np.asarray(scores, dtype=np.float64)
     q = np.quantile(scores, level, axis=0, method="higher")
-    above = np.where(scores > q, scores, np.inf)
-    nxt = above.min(axis=0)
-    return np.where(np.isfinite(nxt), 0.5 * (q + nxt), q)
+    nxt = np.where(scores > q, scores, np.inf).min(axis=0)
+    prev = np.where(scores < q, scores, -np.inf).max(axis=0)
+    above_top = np.where(np.isfinite(prev), q + 0.5 * (q - prev), q)
+    return np.where(np.isfinite(nxt), 0.5 * (q + nxt), above_top)

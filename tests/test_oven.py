@@ -96,3 +96,17 @@ def test_tuner_ignores_unchanged_rows():
     lie[:20] = 2.0  # only a fifth of the lie rows changed
     cutoff = _tune_cutoff(base, [("noise", np.full((100, 1), 10.0)), ("lie", lie)], counter, 15)
     assert 3 <= cutoff <= 10
+
+
+def test_noise_stays_on_the_sensor_grid():
+    from timeseries import channel_resolution
+
+    rng = np.random.default_rng(5)
+    base = np.round(rng.uniform(20, 30, size=(500, 6, 3)) / 0.06) * 0.06
+    res = channel_resolution(base)
+    np.testing.assert_allclose(res, 0.06, atol=1e-9)
+    small = noise(base, np.full(3, 0.06), 0.1, 2, rng, res)
+    assert np.mean(np.any(small != base, axis=(1, 2))) < 0.01  # jitter below half an increment rounds away
+    big = noise(base, np.full(3, 0.06), 4.0, 2, rng, res)
+    steps = (big - base)[:, -2:] / 0.06
+    np.testing.assert_allclose(steps, np.round(steps), atol=1e-6)

@@ -31,3 +31,10 @@ def test_line_sits_between_tied_values():
     assert 4.0 < line < 9.0
     assert np.mean(scores > line) == 0.01
     assert np.mean(scores + 1e-6 > line) == 0.01  # a tiny nudge does not cross it
+
+
+def test_line_above_the_largest_tied_value():
+    scores = np.repeat([0.0, 1.0, 4.0], [900, 90, 10]).astype(float)
+    line = empirical_line(scores, 0.005)
+    assert 4.0 < line < 9.0
+    assert np.mean(scores + 1e-6 > line) == 0.0

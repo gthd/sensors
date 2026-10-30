@@ -17,7 +17,8 @@ passes).
 Corruptions, always on the last W steps only, sized against the step:
 
 - noise:         gaussian jitter of ``scale x usual step std`` on every
-                 channel, independently every step.
+                 channel, independently every step, rounded to the channel's
+                 resolution as the sensor itself would.
 - obvious lie:   n channels show readings from a random training stretch.
 - plausible lie: n channels replay: their last true reading plus the steps
                  of a random training stretch. With W = 1 this is the last
@@ -216,9 +217,33 @@ def _pick(n_rows: int, n_channels: int, n_pick: int, rng: np.random.Generator) -
     return np.argsort(rng.random((n_rows, n_channels)), axis=1)[:, :n_pick]
 
 
-def noise(frames, step_std, scale, minutes, rng) -> np.ndarray:
+def channel_resolution(values: np.ndarray) -> np.ndarray:
+    """The smallest step between distinct readings of each channel, shape ``(n_channels,)``.
+
+    Sensors report in fixed increments: whole degrees, 0.06 degrees, whole
+    light units. Float noise in the stored values is rounded away first.
+    """
+    values = np.asarray(values, dtype=np.float64).reshape(-1, values.shape[-1])
+    out = np.empty(values.shape[1])
+    for ch in range(values.shape[1]):
+        steps = np.diff(np.unique(np.round(values[:, ch], 9)))
+        out[ch] = steps.min() if len(steps) else 0.0
+    return out
+
+
+def noise(frames, step_std, scale, minutes, rng, resolution=None) -> np.ndarray:
+    """Gaussian jitter on every channel, rounded to each channel's resolution.
+
+    A real sensor rounds whatever it measures, so noisy readings stay on its
+    grid of possible values. Jitter smaller than half an increment rounds to
+    nothing and leaves the reading exactly as it was.
+    """
     out = frames.copy()
-    out[:, -minutes:, :] += rng.normal(0.0, scale, size=(len(out), minutes, out.shape[2])) * step_std
+    shock = rng.normal(0.0, scale, size=(len(out), minutes, out.shape[2])) * step_std
+    if resolution is not None:
+        res = np.asarray(resolution, dtype=np.float64)
+        shock = np.where(res > 0, np.round(shock / np.where(res > 0, res, 1.0)) * res, shock)
+    out[:, -minutes:, :] += shock
     return out
 
 
@@ -254,8 +279,15 @@ def changed(base: np.ndarray, corrupted: np.ndarray) -> np.ndarray:
 
 
 def corruptions(base, donors, step_std, minutes, rng, setup: Setup) -> list[tuple[str, str, np.ndarray]]:
-    """Every corruption of ``base`` as (name, kind, windows), kind "noise" or "lie"."""
-    out = [(f"noise {s:.2f} step-std", "noise", noise(base, step_std, s, minutes, rng)) for s in setup.noise_scales]
+    """Every corruption of ``base`` as (name, kind, windows), kind "noise" or "lie".
+
+    Noise is rounded to the resolution the clean donors show.
+    """
+    resolution = channel_resolution(donors)
+    out = [
+        (f"noise {s:.2f} step-std", "noise", noise(base, step_std, s, minutes, rng, resolution))
+        for s in setup.noise_scales
+    ]
     for n in setup.lie_counts:
         out.append((f"obvious lie {n}", "lie", obvious_lie(base, donors, n, minutes, rng)))
     for n in setup.lie_counts:
