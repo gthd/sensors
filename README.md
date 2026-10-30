@@ -262,9 +262,11 @@ python run_room_monitor.py                       # γύρω στο 1 λεπτό
 
 Πέμπτη μηχανή: γωνίες αρθρώσεων στο περπάτημα (UCI, «Multivariate Gait Data», https://archive.ics.uci.edu/dataset/760). Δέκα άνθρωποι περπάτησαν δέκα φορές σε τρεις συνθήκες: χωρίς νάρθηκα, με νάρθηκα στο γόνατο και με νάρθηκα στον αστράγαλο (και οι δύο στο δεξί πόδι). Κάθε περπάτημα είναι ένας κύκλος βάδισης σε 101 σημεία, με έξι γωνίες: αστράγαλος, γόνατο και ισχίο, αριστερά και δεξιά.
 
-Τα δεδομένα δεν μπαίνουν στο git. Το `gait.csv` του UCI μπαίνει στον φάκελο `DatasetGait/`.
+Τα δεδομένα είναι συμπιεσμένα στο branch `gait-data`:
 
 ```
+mkdir -p DatasetGait
+git show origin/gait-data:DatasetGait/gait.csv.gz | gunzip > DatasetGait/gait.csv
 python run_gait_monitor.py                       # γύρω στα 30 δευτερόλεπτα
 ```
 
