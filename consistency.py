@@ -35,7 +35,7 @@ import numpy as np
 from scipy.stats import chi2
 
 from monitor import BLOCK_SIZE, N_BLOCKS, RIDGE, SYSTEM_FPR
-from thresholds import DEFAULT_TARGET
+from thresholds import DEFAULT_TARGET, line_between
 
 # Rows are solved in chunks so the stacked sub-matrices stay small in memory.
 CHUNK = 512
@@ -110,10 +110,10 @@ class SensorRemovalCheck:
         w, d = self._whiten(x_clean)
         order = np.argsort(-self._conditional(w), axis=1, kind="stable")
         lines = np.empty(self.n_blocks + 1, dtype=np.float64)
-        lines[0] = np.quantile(d, 1.0 - target, method="higher")
+        lines[0] = line_between(d, 1.0 - target)
         for m in range(1, self.n_blocks):
             remainder = self._remainder(w, d, order[:, :m])
-            lines[m] = np.quantile(remainder, 1.0 - target, method="higher")
+            lines[m] = line_between(remainder, 1.0 - target)
         lines[: self.n_blocks] = np.minimum.accumulate(lines[: self.n_blocks])
         lines[self.n_blocks] = np.inf
         return lines
