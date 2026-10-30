@@ -140,7 +140,15 @@ git show origin/oven-data:Dataset3/data_X.csv.gz | gunzip > Dataset3/data_X.csv
 
 Τρίτη μηχανή: το σπίτι ενός ηλικιωμένου ανθρώπου (UCI, «Single Elder Home Monitoring: Gas and Position», https://archive.ics.uci.edu/dataset/799). Εννιά αισθητήρες αέρα: θερμοκρασία, υγρασία, δύο CO2, τέσσερις MOX και ένας CO. Μία μέτρηση κάθε 20 δευτερόλεπτα, από τον Νοέμβριο του 2019 ως τον Φεβρουάριο του 2020. Υπάρχει και ένα αρχείο με το σε ποιο δωμάτιο μπαίνει ο άνθρωπος.
 
-Τα δεδομένα δεν μπαίνουν στο git. Από το zip του UCI, τα `database_gas.csv` και `database_pos.csv` μπαίνουν στον φάκελο `DatasetHome/`. Το `data_ref_until_2020-02-13.csv` είναι απλώς οι τελευταίες 19 μέρες του `database_gas.csv` και δεν χρειάζεται.
+Τα δεδομένα δεν μπαίνουν στο κύριο branch. Είναι συμπιεσμένα στο branch `home-data`:
+
+```
+mkdir -p DatasetHome
+git show origin/home-data:DatasetHome/database_gas.csv.gz | gunzip > DatasetHome/database_gas.csv
+git show origin/home-data:DatasetHome/database_pos.csv.gz | gunzip > DatasetHome/database_pos.csv
+```
+
+Το `data_ref_until_2020-02-13.csv` του zip είναι απλώς οι τελευταίες 19 μέρες του `database_gas.csv` και δεν χρειάζεται.
 
 ```
 python run_home_monitor.py                       # γύρω στα 9 λεπτά
