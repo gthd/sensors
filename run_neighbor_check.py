@@ -121,7 +121,8 @@ def _tune_cutoff(base, groups, counter, n_blocks: int) -> int:
 
     ``groups`` is a list of (kind, corrupted) with kind "noise" or "lie",
     each ``corrupted`` built from ``base`` row for row. ``counter`` maps
-    frames to (alarm, count).
+    frames to (alarm, count). Rows the corruption left unchanged are skipped:
+    nothing could tell them apart from clean rows.
     """
     eligible = ~counter(base)[0]
     if not eligible.any():
@@ -131,8 +132,13 @@ def _tune_cutoff(base, groups, counter, n_blocks: int) -> int:
     for kind, corrupted in groups:
         if kind not in ("noise", "lie"):
             raise ValueError(f"Unknown group kind: {kind}")
-        alarm, count = counter(corrupted[eligible])
+        rows = eligible & np.any(corrupted != base, axis=1)
+        if not rows.any():
+            continue
+        alarm, count = counter(corrupted[rows])
         prepared.append((kind, alarm, count))
+    if not any(kind == "noise" for kind, _, _ in prepared) or not any(kind == "lie" for kind, _, _ in prepared):
+        raise ValueError("Tuning needs at least one changed noise row and one changed lie row")
 
     best_k, best_score, best_lie = 1, -np.inf, 0.0
     for k in range(1, n_blocks + 1):
