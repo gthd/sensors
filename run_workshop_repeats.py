@@ -6,6 +6,10 @@ Settings (each can be one value or ``both``):
              temporal  batches 1-7 train, batches 8-10 test (sensors drift)
 --threshold  chi2      chi-square lines from the formula (the original)
              empirical lines from clean calibration rows, see thresholds.py
+--stage2     hot       count sensors over their own line (the original)
+             removal   count sensors set aside before the rest passes,
+                       see consistency.py
+             both      (default)
 --tune-lie   both      tune the cutoff on both lie types below (default)
              sensors   tune on whole-sensor lies only
              features  tune on scattered single-feature lies only (the original)
@@ -28,18 +32,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from consistency import SensorRemovalCheck
+from corruptions import NOISE_SCALES, POISON_FRACTIONS, SENSOR_COUNTS, random_noise, random_poison, sensor_lie
 from data_loader import TEMPORAL_TRAIN_BATCHES, load_nominal_dataset, split_random_indices, split_temporal_indices
-from monitor import BlockMahalanobisMonitor
-from run_full_vs_blocks import FullMahalanobis
-from run_neighbor_check import (
-    _block_distances,
-    _correct,
-    _full_distance,
-    _hot_when_alarmed,
-    _still_alarming,
-    _tune_cutoff,
-)
-from run_random_catch import NOISE_SCALES, POISON_FRACTIONS, SENSOR_COUNTS, _random_noise, _random_poison, _sensor_lie
+from monitor import BlockMahalanobisMonitor, FullMahalanobis
+from run_neighbor_check import _correct, _count_when_alarmed, _still_alarming, _tune_cutoff, hot_counter, removal_counter
 from thresholds import DEFAULT_TARGET, empirical_line, empirical_lines
 
 SEEDS = (42, 43, 44, 45, 46)
@@ -51,6 +48,7 @@ def main() -> None:
     args = _parse_args()
     splits = ("random", "temporal") if args.split == "both" else (args.split,)
     thresholds = ("chi2", "empirical") if args.threshold == "both" else (args.threshold,)
+    methods = ("hot", "removal") if args.stage2 == "both" else (args.stage2,)
 
     features, gas_ids, batch_ids = load_nominal_dataset(return_batches=True)
     summary: dict[str, pd.Series] = {}
@@ -64,12 +62,13 @@ def main() -> None:
         x_test, gas_test = features[test_idx], gas_ids[test_idx]
         blocks = BlockMahalanobisMonitor().fit(x_train)
         full = FullMahalanobis().fit(x_train)
+        check = SensorRemovalCheck().fit(x_train)
         std = np.maximum(blocks.feature_std_, 1e-8)
 
-        for threshold in thresholds:
-            label = f"{split} / {threshold}"
+        for threshold, method in [(t, m) for t in thresholds for m in methods]:
+            label = f"{split} / {threshold} / {method}"
             print("=" * 78)
-            print(f"Split: {split}   Threshold: {threshold}   Cutoff tuned on: {args.tune_lie} lies")
+            print(f"Split: {split}   Threshold: {threshold}   Stage 2: {method}   Cutoff tuned on: {args.tune_lie} lies")
             if split == "temporal":
                 print(f"Train batches 1-{TEMPORAL_TRAIN_BATCHES} ({len(train_idx)} rows), test batches "
                       f"{TEMPORAL_TRAIN_BATCHES + 1}-{int(batch_ids.max())} ({len(test_idx)} rows).")
@@ -79,11 +78,14 @@ def main() -> None:
                 print(f"Lines set so about {args.target:.1%} of clean calibration rows alarm (per seed).")
             else:
                 print(f"Chi-square lines: all-128 {full.chi2_tau:.1f}, per sensor {blocks.chi2_tau:.1f}.")
+            if method == "removal":
+                print("Stage 2 counts the sensors set aside before the rest passes (the suspects).")
 
             rows, counts, cutoff = [], None, None
             for seed in SEEDS:
                 metrics, seed_counts = _one_split(
-                    seed, x_test, gas_test, x_train, gas_train, std, blocks, full, threshold, args.target, args.tune_lie
+                    seed, x_test, gas_test, x_train, gas_train, std, blocks, full, check,
+                    threshold, method, args.target, args.tune_lie,
                 )
                 rows.append(metrics)
                 if seed == FIGURE_SEED:
@@ -97,7 +99,8 @@ def main() -> None:
             summary[label] = spread["median"]
 
             assert counts is not None and cutoff is not None
-            path = _save_figure(counts, int(cutoff), f"{split}_{threshold}", label)
+            tag = f"{split}_{threshold}" if method == "hot" else f"{split}_{threshold}_{method}"
+            path = _save_figure(counts, int(cutoff), tag, label, method)
             print(f"\nFigure: {path}\n")
 
     if len(summary) > 1:
@@ -110,12 +113,13 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--split", choices=("random", "temporal", "both"), default="both")
     parser.add_argument("--threshold", choices=("chi2", "empirical", "both"), default="both")
+    parser.add_argument("--stage2", choices=("hot", "removal", "both"), default="both")
     parser.add_argument("--tune-lie", choices=("both", "sensors", "features"), default="both")
     parser.add_argument("--target", type=float, default=DEFAULT_TARGET, help="clean alarm rate for empirical lines")
     return parser.parse_args()
 
 
-def _one_split(seed, x_test, gas_test, x_train, gas_train, std, blocks, full, threshold, target, tune_lie):
+def _one_split(seed, x_test, gas_test, x_train, gas_train, std, blocks, full, check, threshold, method, target, tune_lie):
     rng = np.random.default_rng(seed)
     order = rng.permutation(x_test.shape[0])
     mid = x_test.shape[0] // 2
@@ -123,45 +127,49 @@ def _one_split(seed, x_test, gas_test, x_train, gas_train, std, blocks, full, th
     eva_gas = gas_test[order[mid:]]
 
     if threshold == "empirical":
-        full.tau = empirical_line(_full_distance(cal, full), target)
-        blocks.set_block_lines(empirical_lines(_block_distances(cal, blocks), target))
+        full.tau = empirical_line(full.distances(cal), target)
+        blocks.set_block_lines(empirical_lines(blocks.block_distances_batch(cal), target))
+        check.set_lines(check.empirical_lines(cal, target))
     else:
         full.tau = full.chi2_tau
         blocks.set_block_lines(None)
+        check.set_lines(None)
+    counter = hot_counter(blocks, full) if method == "hot" else removal_counter(check)
 
     rng_tune = np.random.default_rng(seed + 7)
-    groups = [("noise", _random_noise(cal, std, scale, rng_tune)) for scale in NOISE_SCALES]
+    groups = [("noise", random_noise(cal, std, scale, rng_tune)) for scale in NOISE_SCALES]
     if tune_lie in ("sensors", "both"):
-        groups += [("lie", _sensor_lie(cal, x_train, n, blocks.block_size, rng_tune)) for n in SENSOR_COUNTS]
+        groups += [("lie", sensor_lie(cal, x_train, n, blocks.block_size, rng_tune)) for n in SENSOR_COUNTS]
     if tune_lie in ("features", "both"):
-        groups += [("lie", _random_poison(cal, x_train, f, rng_tune)) for f in POISON_FRACTIONS]
-    cutoff = _tune_cutoff(cal, groups, blocks, full)
+        groups += [("lie", random_poison(cal, x_train, f, rng_tune)) for f in POISON_FRACTIONS]
+    cutoff = _tune_cutoff(cal, groups, counter, blocks.n_blocks)
 
     rng_eval = np.random.default_rng(seed + 1)
-    metrics: dict[str, float] = {"seed": seed, "cutoff": cutoff, "clean still alarming": _still_alarming(eva, blocks, full)}
+    eligible = ~counter(eva)[0]
+    metrics: dict[str, float] = {"seed": seed, "cutoff": cutoff, "clean still alarming": _still_alarming(eva, counter)}
     noise_50 = None
     for scale in NOISE_SCALES:
-        corrupted = _random_noise(eva, std, scale, rng_eval)
-        metrics[f"noise {scale:.2f}"] = _correct(eva, corrupted, blocks, full, cutoff, "noise")
+        corrupted = random_noise(eva, std, scale, rng_eval)
+        metrics[f"noise {scale:.2f}"] = _correct(eligible, corrupted, counter, cutoff, "noise")
         if scale == 0.50:
             noise_50 = corrupted
     for fraction in POISON_FRACTIONS:
-        corrupted = _random_poison(eva, x_train, fraction, rng_eval)
-        metrics[f"feature lie {int(fraction * 100)}%"] = _correct(eva, corrupted, blocks, full, cutoff, "lie")
+        corrupted = random_poison(eva, x_train, fraction, rng_eval)
+        metrics[f"feature lie {int(fraction * 100)}%"] = _correct(eligible, corrupted, counter, cutoff, "lie")
     one_sensor = None
     for n in SENSOR_COUNTS:
-        corrupted = _sensor_lie(eva, x_train, n, blocks.block_size, rng_eval)
-        metrics[f"sensor lie {n}"] = _correct(eva, corrupted, blocks, full, cutoff, "lie")
+        corrupted = sensor_lie(eva, x_train, n, blocks.block_size, rng_eval)
+        metrics[f"sensor lie {n}"] = _correct(eligible, corrupted, counter, cutoff, "lie")
         if n == 1:
             one_sensor = corrupted
     for n in SENSOR_COUNTS:
-        corrupted = _sensor_lie(eva, x_train, n, blocks.block_size, rng_eval, base_gas=eva_gas, donor_gas=gas_train)
-        metrics[f"same-gas lie {n}"] = _correct(eva, corrupted, blocks, full, cutoff, "lie")
+        corrupted = sensor_lie(eva, x_train, n, blocks.block_size, rng_eval, base_gas=eva_gas, donor_gas=gas_train)
+        metrics[f"same-gas lie {n}"] = _correct(eligible, corrupted, counter, cutoff, "lie")
 
     counts = {
-        "Clean": _hot_when_alarmed(eva, blocks, full),
-        "Noise 0.50": _hot_when_alarmed(noise_50, blocks, full),
-        "1-sensor lie": _hot_when_alarmed(one_sensor, blocks, full),
+        "Clean": _count_when_alarmed(eva, counter),
+        "Noise 0.50": _count_when_alarmed(noise_50, counter),
+        "1-sensor lie": _count_when_alarmed(one_sensor, counter),
     }
     return metrics, counts
 
@@ -178,7 +186,7 @@ def _spread(table: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _save_figure(counts: dict[str, np.ndarray], cutoff: int, tag: str, title: str) -> Path:
+def _save_figure(counts: dict[str, np.ndarray], cutoff: int, tag: str, title: str, method: str) -> Path:
     path = Path(__file__).resolve().parent / "figures" / f"hot_sensors_{tag}.png"
     path.parent.mkdir(exist_ok=True)
     bins = np.arange(-0.5, 17.5, 1.0)
@@ -191,7 +199,7 @@ def _save_figure(counts: dict[str, np.ndarray], cutoff: int, tag: str, title: st
         plt.plot(centers, share, marker="o", label=f"{name} (n={len(values)})", color=colors[name])
     plt.axvline(cutoff - 0.5, color="black", linestyle="--", linewidth=1, label=f"noise if at least {cutoff}")
     plt.xticks(range(0, 17))
-    plt.xlabel("Sensors that also alarm")
+    plt.xlabel("Sensors that also alarm" if method == "hot" else "Sensors set aside before the rest passes")
     plt.ylabel("Share of alarmed rows")
     plt.title(title)
     plt.ylim(0, 1)

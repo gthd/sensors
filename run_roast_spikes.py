@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import chi2
 
-from run_random_catch import _column_swap, _random_noise
+from corruptions import column_swap, random_noise
 from thresholds import DEFAULT_TARGET, empirical_lines
 
 SEEDS = (42, 43, 44, 45, 46)
@@ -138,7 +138,7 @@ def _plausible_lie(current, previous, donor_jumps, n_thermo, rng) -> np.ndarray:
 
 
 def _column_swap_rows(base, replacement, n_columns, rng) -> np.ndarray:
-    """Like ``_column_swap``, but row i takes its values from ``replacement[i]``."""
+    """Like ``column_swap``, but row i takes its values from ``replacement[i]``."""
     out = base.copy()
     n_rows, n_features = out.shape
     for i in range(n_rows):
@@ -160,8 +160,8 @@ def _one_seed(seed, prev_test, cur_test, levels_train, jumps_train, center, scal
         tau = chi2_tau
 
     rng_tune = np.random.default_rng(seed + 7)
-    groups = [("noise", _random_noise(cal_cur, scale, s, rng_tune)) for s in OVEN_NOISE_SCALES]
-    groups += [("lie", _column_swap(cal_cur, levels_train, n, rng_tune)) for n in THERMO_COUNTS]
+    groups = [("noise", random_noise(cal_cur, scale, s, rng_tune)) for s in OVEN_NOISE_SCALES]
+    groups += [("lie", column_swap(cal_cur, levels_train, n, rng_tune)) for n in THERMO_COUNTS]
     cutoff = _tune(cal_cur, cal_prev, groups, center, scale, tau)
 
     rng_eval = np.random.default_rng(seed + 1)
@@ -172,10 +172,10 @@ def _one_seed(seed, prev_test, cur_test, levels_train, jumps_train, center, scal
         "clean spikes": float(np.mean(_hot(eva_cur, eva_prev, center, scale, tau) > 0)),
     }
     for s in OVEN_NOISE_SCALES:
-        corrupted = _random_noise(eva_cur, scale, s, rng_eval)
+        corrupted = random_noise(eva_cur, scale, s, rng_eval)
         metrics[f"noise {s:.2f} jump-std"] = _correct(eva_cur, corrupted, eva_prev, center, scale, tau, cutoff, "noise")
     for n in THERMO_COUNTS:
-        corrupted = _column_swap(eva_cur, levels_train, n, rng_eval)
+        corrupted = column_swap(eva_cur, levels_train, n, rng_eval)
         metrics[f"obvious lie {n}"] = _correct(eva_cur, corrupted, eva_prev, center, scale, tau, cutoff, "lie")
     for n in THERMO_COUNTS:
         corrupted = _plausible_lie(eva_cur, eva_prev, jumps_train, n, rng_eval)
