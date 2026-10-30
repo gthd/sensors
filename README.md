@@ -1,333 +1,401 @@
-# Αισθητήρες: θόρυβος ή ψέμα
+# Sensors: noise or a lie?
 
-Ένα pipeline, δύο μηχανές. Μαθαίνει μόνο από καθαρές γραμμές, βάζει σε κάθε αισθητήρα μια γραμμή από το χι-τετράγωνο, και μετά μετράει πόσοι άναψαν.
+When a group of sensors starts reporting strange values, there are two very different explanations:
 
-Πολλοί μαζί σημαίνει θόρυβος. Λίγοι σημαίνει ψέμα. Αν δεν ανάψει κανένας, η γραμμή δεν κατεβαίνει.
+- **Noise.** Every sensor gets a little shaky at once, like static on a radio. Annoying, but nobody is wrong on purpose.
+- **A lie.** One or two sensors report wrong values while the rest are fine. The sensor might be broken, stuck, or tampered with.
 
-Ο αριθμός «πόσοι είναι πολλοί» διαλέγεται μία φορά για κάθε μηχανή, σε ένα κομμάτι όπου ήδη ξέρουμε ποια γραμμή είναι θόρυβος και ποια ψέμα. Δεν αλλάζει όσο τρέχει το πρόγραμμα. Η γραμμή του χι-τετράγωνου δεν ρυθμίζεται στο χέρι.
+This repository builds a monitor that first notices *that* something is wrong, then guesses *which* of the two it is. It tests that monitor on five real datasets: a gas-sensor array, an industrial oven, an elderly person's home, an office room with a head count, and people walking with and without a leg brace.
 
-Ο θόρυβος είναι τυχαίος αριθμός σε όλα τα χαρακτηριστικά, με μέγεθος 0.10, 0.25, 0.50 ή 1.00 φορές το άνοιγμα της μέτρησης. Το ψέμα αντικαθιστά ένα τυχαίο ποσοστό χαρακτηριστικών (5%, 10%, 25%) με τιμές από μια άλλη καθαρή γραμμή. Τα ίδια τέσσερα μεγέθη και τα ίδια τρία ποσοστά χρησιμοποιούνται και στις δύο μηχανές.
+Every monitor here learns only from clean data. Nothing is tuned by hand, and every reported number comes from data the monitor never saw while it was being set up.
 
-## Αέριο
+---
 
-Δεκαέξι χημικοί αισθητήρες, οκτώ αριθμοί ο καθένας. Κάθε γραμμή είναι μια στιγμή μόνη της, χωρίς το προηγούμενο λεπτό. Ο έλεγχος γίνεται στη στάθμη.
+## Contents
 
-Τα αρχεία είναι τα `Dataset/batch1.dat` ως `Dataset/batch10.dat`. Το 70% κρατιέται για μάθηση (seed 42) και είναι μόνο καθαρές γραμμές. Τα υπόλοιπα ανακατεύονται πέντε φορές (seeds 42 ως 46): τα μισά διαλέγουν το όριο, τα άλλα μισά το βαθμολογούν.
+1. [The idea in one picture](#1-the-idea-in-one-picture)
+2. [How the monitor works](#2-how-the-monitor-works)
+3. [How we test it](#3-how-we-test-it)
+4. [Results at a glance](#4-results-at-a-glance)
+5. [The five datasets](#5-the-five-datasets)
+6. [What we learned](#6-what-we-learned)
+7. [Which setup should I use?](#7-which-setup-should-i-use)
+8. [Getting the data](#8-getting-the-data)
+9. [Running it](#9-running-it)
+10. [What is in the repository](#10-what-is-in-the-repository)
+11. [History of changes](#11-history-of-changes)
 
-Το όριο έμεινε **10 στους 16** και τις πέντε φορές. Αν ανάψουν 10 ή περισσότεροι, είναι θόρυβος. Αν ανάψουν λιγότεροι, και τουλάχιστον ένας, είναι ψέμα.
+---
 
-Αυτό που κρατάμε είναι ο θόρυβος από 0.50 και πάνω. Στο 0.50 το σωστό είδος είναι περίπου 84%. Στο 1.00 είναι 100%. Το ψέμα στο 10% είναι περίπου 84%. Στο 25% πέφτει κοντά στο 67%, γιατί ανάβουν περισσότεροι αισθητήρες και μερικές γραμμές περνάνε στη μεριά του θορύβου. Περίπου 8% από τις καθαρές γραμμές ανάβουν ακόμα, και αυτές κάθονται στη μεριά του ψέματος.
+## 1. The idea in one picture
 
-Η φιγούρα είναι το `figures/hot_sensors.png`.
+Think of the sensors as **witnesses to the same event**.
 
-```
-python run_workshop_repeats.py
-```
+- If **one witness** tells a story that does not match everyone else's, that witness is probably lying.
+- If **everyone's story** is a little off, the lighting was probably bad: that is noise.
 
-## Φούρνος
+So the monitor asks one question: **how many witnesses do I have to ignore before everyone else agrees?**
 
-Δεκαπέντε θερμόμετρα, ένα νούμερο το καθένα, κάθε λεπτό. Το αρχείο είναι το `Dataset3/data_X.csv`. Η θερμοκρασία σε τέσσερα χρόνια ανοίγει γύρω στους 36 βαθμούς. Από λεπτό σε λεπτό κουνιέται περίπου 0,8. Η γραμμή του συναγερμού είναι κοντά στους 3 βαθμούς, οπότε ένα μικρό σκούντημα φαίνεται.
+| Witnesses ignored | Verdict |
+|---|---|
+| 0 | Nothing is wrong (no alarm) |
+| 1 or 2 | **A lie**, and the ignored ones are the suspects |
+| Most of them | **Noise** |
 
-Οι πρώτοι μήνες, ως τον Οκτώβριο του 2017, μαθαίνουν το συνηθισμένο άλμα. Τα λεπτά της δοκιμής ανακατεύονται πέντε φορές, όπως στο αέριο.
+This only works when the sensors normally agree with each other. That is the single most important fact in this whole project, and it explains most of the results below.
 
-Το όριο έμεινε **5 στα 15** και τις πέντε φορές. Ο θόρυβος 0.10 πιάνεται περίπου στο 88%. Από 0.25 και πάνω είναι 100%. Το ψέμα στο 5% είναι περίπου 95%, και από 10% και πάνω είναι 100%. Περίπου 9% από τα καθαρά λεπτά ανάβουν, στη μεριά του ψέματος.
+---
 
-```
-python run_roast_spikes.py
-```
+## 2. How the monitor works
 
-## Τι άλλαξε (έκδοση 2)
+### Step 1: is anything wrong?
 
-Οι αριθμοί πιο πάνω είναι από την πρώτη έκδοση. Ξανατρέξε τα scripts για τους νέους.
+The monitor learns what "normal" looks like from clean data: the average reading and how readings normally move *together*. For a new reading it computes one number, the **Mahalanobis distance**. Think of it as "how surprised should I be?", where breaking the usual relationships between sensors counts just as much as an odd value on its own. If the distance is above a line, the alarm goes off.
 
-1. **Διορθώσεις.** Το όριο διαλέγεται με τον ίδιο κανόνα που βαθμολογείται: μετράνε μόνο γραμμές που ήταν καθαρές πριν τη φθορά, και ένα ψέμα με μηδέν αναμμένους αισθητήρες δεν μετράει ποτέ σωστό. Το `run_full_vs_blocks.py` δεν χρειάζεται πια το `library_variants.py`. Αν κανένα όριο δεν πιάνει σωστά τα ψέματα, τυπώνεται `WARNING`.
-2. **Φούρνος δίκαιος.** Ο θόρυβος μετριέται σε μονάδες του συνηθισμένου άλματος (όχι του ανοίγματος της θερμοκρασίας). Μεγέθη 0.10 ως 4.00. Δύο είδη ψέματος σε 1, 2, 4, 6 θερμόμετρα: το **εμφανές** (τιμή από άλλη εποχή, όπως πριν) και το **πιστευτό** (προηγούμενη τιμή + ένα συνηθισμένο άλμα).
-3. **Αέριο στον χρόνο.** `--split temporal`: μάθηση στα batch 1–7, δοκιμή στα 8–10.
-4. **Γραμμές από τα δεδομένα.** `--threshold empirical`: οι γραμμές μπαίνουν έτσι ώστε περίπου 1% των καθαρών γραμμών να ανάβουν (`--target`). Το `thresholds.py` κάνει τη δουλειά.
-5. **Ψέμα σε ολόκληρο αισθητήρα.** Αντικαθίστανται και τα 8 νούμερα 1, 2, 4 ή 6 αισθητήρων. Το **same-gas** ψέμα παίρνει τιμές από γραμμή του ίδιου αερίου.
+### Step 2: noise or lie?
 
-## Τι άλλαξε (έκδοση 3)
+Two ways to count how many sensors are involved:
 
-### Το πρόβλημα
+| Name | What it counts | Strength | Weakness |
+|---|---|---|---|
+| `hot` (the original) | Sensors whose own readings look odd *on their own* | Simple | Blind to a sensor that shows a real-looking value from another moment, because on its own it looks fine |
+| `removal` (new) | Sensors that must be **set aside** before the rest agree (the witness idea) | Sees sensors that disagree with each other, and **names the suspects** | Needs sensors that normally move together |
 
-Ένας αισθητήρας που λέει ψέματα δείχνει μια **αληθινή** μέτρηση από άλλη στιγμή. Τα 8 νούμερά του, μόνα τους, είναι απόλυτα συνηθισμένα. Αυτό που δεν ταιριάζει είναι ότι διαφωνούν με τους άλλους 15. Ο παλιός δεύτερος έλεγχος («πόσοι αισθητήρες ανάβουν μόνοι τους») κοιτάει κάθε αισθητήρα χωριστά, οπότε σε αυτό το ψέμα βρίσκει **μηδέν** αναμμένους και πετάει τον συναγερμό. Γι' αυτό το ψέμα σε ολόκληρο αισθητήρα έβγαινε σωστό μόνο 2–4% (με γραμμές χι-τετράγωνου) και 0% (με γραμμές από τα δεδομένα).
+Then a **cutoff** decides: a count below the cutoff is a lie, a count at or above it is noise. The cutoff is chosen automatically (see [section 3](#3-how-we-test-it)).
 
-### Η λύση: πόσους αισθητήρες πρέπει να βγάλεις;
+`removal` does not need any refitting. A standard identity splits the total distance into "what the other sensors explain" plus "what sensor *k* adds on its own" (`d = d_without_k + w_kᵀ (P_kk)⁻¹ w_k`, with `P` the inverse covariance and `w = P (x − μ)`). That makes it cheap to try setting sensors aside one at a time, most suspicious first.
 
-Νέος δεύτερος έλεγχος, `--stage2 removal` (αρχείο `consistency.py`). Για κάθε γραμμή που χτυπάει συναγερμό, βγάζουμε αισθητήρες έναν-έναν, πρώτα αυτόν που διαφωνεί περισσότερο με τους υπόλοιπους, μέχρι οι υπόλοιποι να περάσουν τη δική τους γραμμή. Ο αριθμός που βγήκε είναι το μέτρημα:
+### For sensors read over time: watch the surprise, not the value
 
-- 1 ή 2: λίγοι αισθητήρες διαφωνούν με τους άλλους, άρα ψέμα. Και ξέρουμε **ποιοι** είναι.
-- πολλοί: τίποτα λιγότερο από σχεδόν όλους δεν εξηγεί τη μέτρηση, άρα θόρυβος.
+In four of the five datasets each sensor is read repeatedly over time (every minute, every 20 seconds, ...). A value on its own says little: the oven is hot during the day and cool at night. What matters is **how the reading moved since last time**, compared with how it usually moves. Two ways to define "usual":
 
-Δεν χρειάζεται καινούργιο fit. Με τον αντίστροφο πίνακα συνδιακύμανσης `P` και `w = P (x − μ)`, ισχύει `d = d_χωρίς_k + w_kᵀ (P_kk)⁻¹ w_k`, οπότε το πόσο «κουβαλάει» κάθε αισθητήρας βγαίνει αμέσως. Με `--threshold empirical` οι γραμμές για κάθε πλήθος αισθητήρων που βγήκαν μπαίνουν από καθαρές γραμμές στις οποίες έχουν βγει, με τον ίδιο τρόπο, οι δικοί τους πιο ύποπτοι αισθητήρες.
-
-Αποτελέσματα (διάμεσος από τα πέντε περάσματα, `random` split, γραμμές από τα δεδομένα στο 1%):
-
-| | παλιό (`hot`) | νέο (`removal`) |
+| Name | Expected move | Good when |
 |---|---|---|
-| καθαρές που ανάβουν | 0.007 | 0.011 |
-| θόρυβος 0.25 | 0.015 | **0.941** |
-| θόρυβος 0.50 | 0.386 | **1.000** |
-| ψέμα χαρακτηριστικών 5% | 0.000 | **0.751** |
-| ψέμα σε 1 αισθητήρα | 0.000 | **0.471** |
-| ψέμα σε 2 αισθητήρες | 0.000 | **0.668** |
-| same-gas ψέμα σε 1 αισθητήρα | 0.000 | **0.370** |
+| `jump` | The average move | Readings move randomly |
+| `trend` | A prediction from the sensor's own last 3 moves | Movements persist, e.g. a rising temperature keeps rising |
 
-Με γραμμές χι-τετράγωνου το ψέμα σε 1 αισθητήρα πάει από 0.036 σε 0.854. Όταν πιάνεται ψέμα σε έναν αισθητήρα, το μέτρημα είναι 1 σχεδόν πάντα, και ο πρώτος ύποπτος είναι ο σωστός αισθητήρας. Η φιγούρα είναι το `figures/hot_sensors_random_empirical_removal.png`.
+The **surprise** is the actual move minus the expected move. The monitor watches the last *W* surprises of each sensor (*W* = 1, or a longer window such as 10 minutes) and applies the same Step 1 and Step 2 to them.
 
-Τα όρια, για να είμαστε τίμιοι:
+### Where the alarm lines come from
 
-- Με γραμμές από τα δεδομένα, το ψέμα σε έναν αισθητήρα πιάνεται περίπου στο 48%. Το όριο εδώ είναι ο **πρώτος** έλεγχος, όχι ο δεύτερος: οι καθαρές αποστάσεις έχουν βαριά ουρά (το 1% είναι γύρω στο 1900, ενώ ο διάμεσος είναι 56), οπότε πολλά ψέματα δεν χτυπάνε καν συναγερμό.
-- Στο `temporal` split με γραμμές από τα δεδομένα, και οι δύο μέθοδοι δεν πιάνουν ψέματα (0%). Οι αισθητήρες στα batch 8–10 έχουν μετακινηθεί τόσο που μια καθαρή γραμμή μοιάζει ήδη με ψέμα σε έναν-δυο αισθητήρες. Η γραμμή του 1% ανεβαίνει πάνω από 30.000, και ένα ψέμα χάνεται μέσα σε αυτό. Με χι-τετράγωνο τα ψέματα φαίνονται να πιάνονται, αλλά μόνο επειδή ανάβει το 58% των καθαρών γραμμών. Αυτό χρειάζεται επαναβαθμονόμηση στον χρόνο, όχι καλύτερο δεύτερο έλεγχο.
-- Το `removal` δεν πετάει ψεύτικους συναγερμούς όπως το `hot` (κάθε συναγερμός έχει μέτρημα τουλάχιστον 1), οπότε με χι-τετράγωνο ανάβουν λίγο περισσότερες καθαρές γραμμές (0.107 αντί 0.075).
+| Name | How the line is set | Note |
+|---|---|---|
+| `chi2` | A textbook formula that assumes bell-curve data | Real data has fatter tails, so it usually rings far too often: about 8–11% of clean readings on gas and oven, and up to 58% on drifted gas data, instead of the intended 0.1% |
+| `empirical` | Learned from clean data so that about **1%** of clean readings cross it | Honest false-alarm rate. **Use this one.** |
 
-### Άλλες αλλαγές
+---
 
-1. **Αριθμητική.** Τα χαρακτηριστικά πάνε από 0.5 ως 69.000. Ο πίνακας συνδιακύμανσης και των 128 είχε condition number γύρω στο 1e14. Τώρα το `FullMahalanobis` τυποποιεί πρώτα (γύρω στο 1e8). Η απόσταση δεν αλλάζει θεωρητικά. Στην πράξη οι αριθμοί κουνιούνται το πολύ 0.002.
-2. **Ταχύτητα.** Ο υπολογισμός της απόστασης γίνεται για όλες τις γραμμές μαζί. Το `run_workshop_repeats.py --stage2 hot` πήγε από 70 σε 28 δευτερόλεπτα. Με τις δύο μεθόδους μαζί θέλει γύρω στα 4 λεπτά.
-3. **Οργάνωση.** Το `FullMahalanobis` μένει στο `monitor.py` και οι φθορές στο `corruptions.py`. Τα scripts δεν φορτώνουν πια το ένα το άλλο για να πάρουν κλάσεις, και το κόλπο για το κυκλικό import έφυγε.
-4. **Το `run_neighbor_check.py`** δοκιμάζει τώρα και ψέματα σε ολόκληρο αισθητήρα, και τρέχει και τις δύο μεθόδους (`--stage2`).
-5. **Tests.** Στον φάκελο `tests/`, με συνθετικά δεδομένα (γρήγορα) και μερικούς ελέγχους στα πραγματικά.
+## 3. How we test it
 
-## Τι άλλαξε (έκδοση 4): φούρνος
+We take clean, real data and **break it on purpose** in known ways, then check whether the monitor notices and names the right kind of problem.
 
-Τα δεδομένα του φούρνου (`Dataset3/data_X.csv`) δεν μπαίνουν στο κύριο branch. Είναι συμπιεσμένα στο branch `oven-data`:
+| Corruption | What we do | Real-world equivalent |
+|---|---|---|
+| **noise** | Add random jitter to every sensor, sized as 0.1× to 4× the usual movement | Electrical interference, a bad power supply |
+| **obvious lie** | 1–6 sensors show a reading copied from another, unrelated moment | A sensor swapped, mis-wired or spoofed crudely |
+| **plausible lie** | 1–6 sensors replay a normal-looking stretch of movement from another time | A careful spoof, a replay attack |
+| **stuck** | 1–6 sensors freeze at their last value | A frozen or disconnected sensor |
+| **whole-sensor lie** (gas only) | All 8 numbers of 1–6 sensors copied from another clean reading | One sensor lying with real-looking values |
+| **feature lie** (gas only) | 5–25% of single numbers scattered across many sensors copied from another reading | Scattered corruption |
 
-```
-git show origin/oven-data:Dataset3/data_X.csv.gz | gunzip > Dataset3/data_X.csv
-```
+**What "correct" means.** A noisy reading is correct if it is called noise. A lie is correct if it raises an alarm *and* is called a lie with at least one sensor counted. Every number in the tables is the **share of corrupted readings that were called the right kind**.
 
-### Τι βρήκαμε στα δεδομένα
+**Fair scoring.** Readings that already raised an alarm before we corrupted them are left out. So are corruptions that **did not change the reading at all**. This matters more than you would think: in the oven, readings are whole degrees and the temperature usually does not move from one minute to the next, so 61% of "plausible lies" on one thermometer left the value exactly as it was. No method could ever see those. Noise is also rounded to each sensor's own resolution (whole degrees, 0.06 °C, ...), because a real sensor can only output values on its own grid.
 
-- Τα θερμόμετρα **δεν κουνιούνται μαζί**. Ακόμα και στον ίδιο θάλαμο, η συσχέτιση των αλμάτων είναι γύρω στο 0.03 στο λεπτό και 0.10 στην ώρα. Το κόλπο του αερίου («ποιος διαφωνεί με τους άλλους») δεν έχει πού να πιαστεί.
-- Οι μετρήσεις είναι **ακέραιοι βαθμοί** και περίπου 82% των λεπτών το άλμα είναι ακριβώς 0. Ένα «πιστευτό» ψέμα δανείζεται ένα συνηθισμένο άλμα, που είναι κι αυτό συνήθως 0. Στο ένα λεπτό, το 61% αυτών των ψεμάτων αφήνει την ένδειξη **ακριβώς ίδια**.
-- Τα άλματα **κρατάνε**: ένα θερμόμετρο που ανεβαίνει τώρα συνήθως συνεχίζει να ανεβαίνει (αυτοσυσχέτιση 0.5–0.8).
+**No peeking.** Data is split into three parts:
 
-### Τι αλλάξαμε
+1. **Training** (usually the first 70% of the time): learns what normal looks like.
+2. **Calibration** (half of the rest): sets the learned lines and chooses the noise-vs-lie cutoff.
+3. **Evaluation** (the other half): produces every number you see.
 
-1. **Δίκαιη βαθμολογία.** Μετράνε μόνο λεπτά που ήταν καθαρά πριν τη φθορά **και** άλλαξαν από αυτήν. Ένα ψέμα που δεν άλλαξε τίποτα δεν το βλέπει καμία μέθοδος. Τυπώνεται και το ποσοστό που άλλαξε. Ο ίδιος κανόνας μπήκε στο `_tune_cutoff`. Στο αέριο δεν αλλάζει τίποτα, γιατί εκεί κάθε φθορά αλλάζει τη γραμμή.
-2. **Έκπληξη αντί για άλμα** (`--detector trend`). Το αναμενόμενο άλμα προβλέπεται από τα 3 τελευταία άλματα του ίδιου θερμομέτρου. Ο έλεγχος κοιτάει τη διαφορά. Αυτό βγάζει περίπου τα δύο τρίτα της συνηθισμένης κίνησης (η διασπορά πέφτει στο 0.34, η τυπική απόκλιση στο 0.58).
-3. **Ψέματα που κρατάνε** (`--minutes 10`). Ο **πιστευτός** ψεύτης παίζει ξανά μια γραμμένη δεκάλεπτη κίνηση από άλλη εποχή. Το **κολλημένο** θερμόμετρο παγώνει στην τελευταία του τιμή.
-4. **Ίδια εργαλεία με το αέριο.** Οι εκπλήξεις των τελευταίων W λεπτών ενός θερμομέτρου παίζουν τον ρόλο των 8 νούμερων ενός αισθητήρα αερίου. Έτσι δουλεύουν αυτούσια το `BlockMahalanobisMonitor` (`--stage2 hot`) και το `SensorRemovalCheck` (`--stage2 removal`).
+This split is repeated with **five different shuffles** (seeds 42–46). Tables show the median; the scripts also print the min and max. When those are close, the result is stable.
 
-### Αποτελέσματα
+---
 
-Φθορές ενός λεπτού, γραμμές από τα δεδομένα στο 1%, διάμεσος από τα πέντε περάσματα:
+## 4. Results at a glance
 
-| | παλιό (jump, hot) | trend, hot | trend, removal |
+Learned (`empirical`) lines at about 1% false alarms, median of five seeds. "Best setup" is the one that does best overall on that dataset; see each section for trade-offs.
+
+| Dataset | Sensors agree with each other? | Best setup | Noise caught | 1-sensor obvious lie | 1-sensor plausible lie | 1 sensor stuck |
+|---|---|---|---|---|---|---|
+| Gas array | Yes | `removal` | 0.94 at 0.25× | 0.47 (whole-sensor lie) | – | – |
+| Oven | **No** | `trend` + `removal` | 0.98 at 2× | 0.95 | 0.06 | 0.04 |
+| Home | Partly (gas sensors) | `jump` + `removal` | 0.96 at 4× | 0.93 | 0.02 | 0.00 |
+| Room | Partly (lights, sound) | `trend` + `removal` | 0.93 at 2× | 0.49 | 0.01 | 0.00 |
+| Walking | **Yes** (left/right twins) | `trend` + `removal` | 0.96 at 1× | 0.99 | 0.95 | 0.95 |
+
+How to read it:
+
+- **Noise is the easy part.** With `removal`, everything noticeable gets caught.
+- **Obvious lies are usually caught**, except in the room, which is empty and dark most of the time, so a copied value often looks like the real one.
+- **Plausible lies and stuck sensors are only caught when the sensors are smooth or strongly coupled** (walking). Everywhere else they are mostly invisible. That is a limit of the data, not of the method: see [section 6](#6-what-we-learned).
+
+---
+
+## 5. The five datasets
+
+### 5.1 Gas sensor array (`run_workshop_repeats.py`, `run_neighbor_check.py`)
+
+**What it is.** 16 chemical sensors, 8 numbers each (128 per reading), 13,910 readings in 10 batches recorded over three years (the UCI Gas Sensor Array Drift data). Each reading is a snapshot, so there is no time series here and the monitor works on the values themselves.
+
+**The problem we found.** A lying sensor copies a *real* reading from another moment, so its 8 numbers look perfectly normal on their own. The original `hot` count found **zero** odd sensors and threw the alarm away. Whole-sensor lies were identified correctly 0% of the time with learned lines (2–4% with `chi2`).
+
+**The fix and the result.** Random 70/30 split, learned lines:
+
+| | `hot` (old) | `removal` (new) |
+|---|---|---|
+| clean readings that alarm | 0.007 | 0.011 |
+| noise 0.25× | 0.015 | **0.941** |
+| noise 0.50× | 0.386 | **1.000** |
+| feature lie 5% | 0.000 | **0.751** |
+| whole-sensor lie, 1 sensor | 0.000 | **0.471** |
+| whole-sensor lie, 2 sensors | 0.000 | **0.668** |
+| same-gas lie, 1 sensor | 0.000 | **0.370** |
+
+With `chi2` lines the 1-sensor lie goes from 0.036 to 0.854. When a 1-sensor lie is caught, the count is almost always exactly 1 and the first suspect is the right sensor (figure: `figures/hot_sensors_random_empirical_removal.png`).
+
+**Limits.**
+- With learned lines about half of 1-sensor lies never raise an alarm in Step 1. Clean distances have a fat tail: the 1% line is around 1,900 while a typical clean reading scores 56.
+- **Sensor drift breaks it.** With `--split temporal` (learn on batches 1–7, test on 8–10) both methods catch 0% of lies with learned lines. The sensors aged so much that a clean reading already looks like a lie on one or two sensors, and the 1% line climbs above 30,000. `chi2` appears to work there, but only because it alarms on 58% of clean readings. This needs recalibration over time, not a better Step 2.
+
+### 5.2 Industrial oven (`run_roast_spikes.py`)
+
+**What it is.** 15 thermometers in 5 chambers, one reading a minute, about four years (`Dataset3/data_X.csv`).
+
+**What is special.**
+- The thermometers **do not move together**. Minute-to-minute moves have a correlation of about 0.03 even within the same chamber, and 0.10 over an hour. There are no witnesses to compare.
+- Readings are **whole degrees**, and about 82% of minutes show no change at all.
+- Movements **persist**: a rising thermometer keeps rising (autocorrelation 0.5–0.8), so `trend` removes about 40% of the usual movement.
+
+**Results** (one-minute corruptions, learned lines):
+
+| | `jump` + `hot` (old) | `trend` + `hot` | `trend` + `removal` |
 |---|---|---|---|
-| καθαρά λεπτά που ανάβουν | 0.008 | 0.009 | 0.010 |
-| θόρυβος 1× άλμα | 0.000 | 0.001 | **0.634** |
-| θόρυβος 2× άλμα | 0.000 | 0.301 | **0.984** |
-| θόρυβος 4× άλμα | 0.000 | 0.971 | **1.000** |
-| εμφανές ψέμα σε 1 | 0.874 | **0.964** | 0.951 |
-| εμφανές ψέμα σε 6 | **1.000** | 0.000 | 0.252 |
-| πιστευτό ψέμα σε 1 | 0.002 | 0.058 | **0.063** |
-| πιστευτό ψέμα σε 6 | 0.004 | 0.133 | **0.180** |
-| κολλημένο σε 1 | 0.000 | 0.041 | **0.044** |
+| clean minutes that alarm | 0.008 | 0.009 | 0.010 |
+| noise 1× usual move | 0.000 | 0.001 | **0.634** |
+| noise 2× | 0.000 | 0.301 | **0.984** |
+| noise 4× | 0.000 | 0.971 | **1.000** |
+| obvious lie, 1 thermometer | 0.874 | **0.964** | 0.951 |
+| obvious lie, 6 thermometers | **1.000** | 0.000 | 0.252 |
+| plausible lie, 1 | 0.002 | 0.058 | **0.063** |
+| plausible lie, 6 | 0.004 | 0.133 | **0.180** |
+| stuck, 1 | 0.000 | 0.041 | **0.044** |
 
-- Το `trend` πιάνει πολύ περισσότερο θόρυβο, πιστευτά ψέματα και κολλημένα θερμόμετρα από το `jump`.
-- Υπάρχει όμως αντάλλαγμα. Ο θόρυβος στρογγυλεύεται σε ακέραιους βαθμούς (έκδοση 6), οπότε αλλάζει μόνο λίγα θερμόμετρα κατά ±1 βαθμό. Για να τον πιάσει, το όριο «πόσοι είναι πολλοί» πέφτει (3 στα 15 για `trend, hot`, 7 για `trend, removal`), και ένα εμφανές ψέμα σε 6 θερμόμετρα βγαίνει θόρυβος. Το παλιό `jump, hot` κρατάει τα εμφανή ψέματα στο 100%, αλλά δεν πιάνει καθόλου θόρυβο. Αν μετράει περισσότερο ο θόρυβος, `trend, removal`. Αν μετράνε τα εμφανή ψέματα σε πολλά θερμόμετρα, `jump, hot`.
-- Σε δεκάλεπτες φθορές, ο θόρυβος 1× άλμα πιάνεται στο 99.6% με `trend, removal`.
+**The trade-off.** Realistic noise, rounded to whole degrees, changes only a few thermometers by about one degree. To catch it, the automatic cutoff for "how many is many" drops (to 3 of 15 for `trend` + `hot`), and then an obvious lie on 6 thermometers gets called noise. The old `jump` + `hot` keeps those lies at 100% but catches no noise at all. Over 10-minute windows, `trend` + `removal` catches noise at 1× in 99.6% of cases.
 
-Τα όρια:
+**Limits.** Plausible lies and stuck thermometers stay mostly invisible: under 20% at one minute and under 3% over ten minutes. A replayed stretch has its own natural trend, and with no neighbour that moves along, nobody disagrees.
 
-- Τα πιστευτά ψέματα και τα κολλημένα θερμόμετρα μένουν **κυρίως αόρατα** (κάτω από 20% στο ένα λεπτό, κάτω από 3% στο δεκάλεπτο με γραμμές από τα δεδομένα). Μια γραμμένη κίνηση έχει τη δική της φυσική τάση, οπότε μόνο το πρώτο της λεπτό ξαφνιάζει. Και αφού τα θερμόμετρα δεν κουνιούνται μαζί, δεν υπάρχει γείτονας να διαφωνήσει. Αυτό είναι όριο των δεδομένων, όχι της μεθόδου.
-- Θόρυβος κάτω από 1× άλμα (δηλαδή ±1 βαθμός) δεν ξεχωρίζει από αυτό που κάνει ο φούρνος κάθε λεπτό.
-- Το πλήρες τρέξιμο (2 διάρκειες × 2 detectors × 2 thresholds × 2 μέθοδοι) θέλει γύρω στα 5 λεπτά.
+### 5.3 Elder's home (`run_home_monitor.py`)
 
-## Τι άλλαξε (έκδοση 5): σπίτι
+**What it is.** One person's home, 9 air sensors (temperature, humidity, two CO2, four MOX gas sensors, CO), one reading every 20 seconds from November 2019 to February 2020. A second file records which room the person enters ([UCI 799](https://archive.ics.uci.edu/dataset/799)).
 
-Τρίτη μηχανή: το σπίτι ενός ηλικιωμένου ανθρώπου (UCI, «Single Elder Home Monitoring: Gas and Position», https://archive.ics.uci.edu/dataset/799). Εννιά αισθητήρες αέρα: θερμοκρασία, υγρασία, δύο CO2, τέσσερις MOX και ένας CO. Μία μέτρηση κάθε 20 δευτερόλεπτα, από τον Νοέμβριο του 2019 ως τον Φεβρουάριο του 2020. Υπάρχει και ένα αρχείο με το σε ποιο δωμάτιο μπαίνει ο άνθρωπος.
+**What is special.** Unlike the oven, the gas sensors **agree**: MOX2–4 move together (0.6–0.7 per step, 0.95 over ten minutes). Readings are whole numbers, and 50–88% of steps show no change.
 
-Τα δεδομένα δεν μπαίνουν στο κύριο branch. Είναι συμπιεσμένα στο branch `home-data`:
+**Results** (`jump`, learned lines; `trend` gives almost the same):
 
-```
-mkdir -p DatasetHome
-git show origin/home-data:DatasetHome/database_gas.csv.gz | gunzip > DatasetHome/database_gas.csv
-git show origin/home-data:DatasetHome/database_pos.csv.gz | gunzip > DatasetHome/database_pos.csv
-```
-
-Το `data_ref_until_2020-02-13.csv` του zip είναι απλώς οι τελευταίες 19 μέρες του `database_gas.csv` και δεν χρειάζεται.
-
-```
-python run_home_monitor.py                       # γύρω στα 9 λεπτά
-python run_home_monitor.py --steps 1 --detector jump --threshold empirical
-```
-
-Ο κοινός μηχανισμός του φούρνου μεταφέρθηκε στο `timeseries.py` (εκπλήξεις, φθορές, δίκαιη βαθμολογία), και τον χρησιμοποιούν και ο φούρνος και το σπίτι. Τα νούμερα του φούρνου δεν άλλαξαν.
-
-### Τι βρήκαμε στα δεδομένα
-
-- Αντίθετα από τον φούρνο, εδώ οι αισθητήρες **συμφωνούν**: τα βήματα των MOX2, MOX3, MOX4 έχουν συσχέτιση 0.6–0.7 και οι στάθμες 0.97. Η αλλαγή σε δέκα λεπτά έχει 0.95.
-- Όπως στον φούρνο, οι τιμές είναι ακέραιες και 50–88% των βημάτων είναι ακριβώς 0.
-- Η πρόβλεψη από τα προηγούμενα βήματα (`trend`) βοηθάει ελάχιστα εδώ (η έκπληξη μένει στο 0.94 του βήματος).
-
-### Αποτελέσματα
-
-Γραμμές από τα δεδομένα στο 1%, διάμεσος από τα πέντε περάσματα:
-
-| | 1 βήμα, hot | 1 βήμα, removal | 30 βήματα, hot | 30 βήματα, removal |
+| | 1 step, `hot` | 1 step, `removal` | 30 steps, `hot` | 30 steps, `removal` |
 |---|---|---|---|---|
-| καθαρές που ανάβουν | 0.011 | 0.011 | 0.009 | 0.009 |
-| θόρυβος 2× βήμα | 0.000 | **0.575** | 0.772 | **1.000** |
-| θόρυβος 4× βήμα | 0.047 | **0.955** | 1.000 | 1.000 |
-| εμφανές ψέμα σε 1 | **0.942** | 0.929 | 0.694 | 0.672 |
-| εμφανές ψέμα σε 4 | **1.000** | 0.377 | 0.334 | **0.956** |
-| πιστευτό ψέμα σε 1 | 0.019 | 0.016 | 0.006 | 0.006 |
-| κολλημένο σε 1 | 0.000 | 0.001 | 0.000 | 0.001 |
+| clean readings that alarm | 0.011 | 0.011 | 0.009 | 0.009 |
+| noise 2× | 0.000 | **0.575** | 0.772 | **1.000** |
+| noise 4× | 0.047 | **0.955** | 1.000 | 1.000 |
+| obvious lie, 1 sensor | **0.942** | 0.929 | 0.694 | 0.672 |
+| obvious lie, 4 sensors | **1.000** | 0.377 | 0.334 | **0.956** |
+| plausible lie, 1 | 0.019 | 0.016 | 0.006 | 0.006 |
+| stuck, 1 | 0.000 | 0.001 | 0.000 | 0.001 |
 
-(Για το `jump`. Το `trend` δίνει σχεδόν τα ίδια.)
+**Why a stuck sensor cannot be caught.** Most of the time the air in a home simply does not change, so a sensor frozen for ten minutes shows almost exactly what it would have shown anyway. A separate check, not part of the script, split stuck sensors by how much the sensor *really* moved during those ten minutes:
 
-- Ο θόρυβος πιάνεται πολύ καλύτερα με `removal`, όπως στον φούρνο.
-- Τα εμφανή ψέματα πιάνονται καλά.
-- Τα πιστευτά ψέματα και τα κολλημένα αισθητήρια **δεν πιάνονται**, ακόμα και με τη συμφωνία των MOX.
-
-### Γιατί δεν πιάνεται ένας κολλημένος αισθητήρας
-
-Τις περισσότερες ώρες ο αέρας του σπιτιού απλώς δεν αλλάζει. Ένας αισθητήρας που παγώνει για δέκα λεπτά δείχνει σχεδόν ό,τι θα έδειχνε κι έτσι. Σε έναν ξεχωριστό έλεγχο (όχι μέσα στο script), με την αλλαγή δέκα λεπτών κάθε αισθητήρα ως χαρακτηριστικό:
-
-| πόσο κουνήθηκε στην πραγματικότητα (σε τυπικές αποκλίσεις) | μερίδιο του χρόνου | πιάστηκε | σωστός ύποπτος όταν πιάστηκε |
+| Real movement (in standard deviations) | Share of time | Caught | Right sensor blamed, when caught |
 |---|---|---|---|
-| κάτω από 1 | 95% | 0.00 | – |
+| under 1 | 95% | 0.00 | – |
 | 1–2 | 4% | 0.02 | 0.67 |
 | 2–4 | 1% | 0.29 | 0.97 |
-| πάνω από 4 | 0.2% | 0.44 | 0.94 |
+| over 4 | 0.2% | 0.44 | 0.94 |
 
-Δηλαδή ένα ψέμα φαίνεται μόνο όταν κάτι συμβαίνει στο σπίτι. Τότε το `removal` δείχνει και τον σωστό αισθητήρα σχεδόν πάντα. Είναι όριο των δεδομένων, όχι της μεθόδου.
+A lie only shows when something is happening, and then `removal` blames the right sensor almost every time.
 
-### Συναγερμοί σε καθαρά δεδομένα: ψεύτικοι ή αληθινοί;
+**Are "false" alarms really false?** Clean readings, split by whether the person entered a room in the previous 10 minutes:
 
-Οι καθαρές μετρήσεις χωρίζονται ανάλογα με το αν ο άνθρωπος μπήκε σε κάποιο δωμάτιο τα τελευταία 10 λεπτά (`database_pos.csv`):
-
-| | όλες | κανείς δεν κουνήθηκε | σαλόνι | υπνοδωμάτιο | μπάνιο | κουζίνα | διάδρομος |
+| | all | nobody moved | living room | bedroom | bathroom | kitchen | hallway |
 |---|---|---|---|---|---|---|---|
-| jump, hot | 0.010 | 0.004 | 0.035 | 0.020 | 0.025 | **0.049** | 0.028 |
-| jump, removal | 0.011 | 0.005 | 0.040 | 0.021 | 0.030 | **0.058** | 0.034 |
+| `jump` + `hot` | 0.010 | 0.004 | 0.035 | 0.020 | 0.025 | **0.049** | 0.028 |
+| `jump` + `removal` | 0.011 | 0.005 | 0.040 | 0.021 | 0.030 | **0.058** | 0.034 |
 
-Όταν κανείς δεν κουνιέται, ανάβει περίπου 1 στις 200 μετρήσεις. Μετά από είσοδο στην κουζίνα, περίπου 1 στις 20. Περίπου τα δύο τρίτα των «ψεύτικων» συναγερμών έρχονται μέσα σε 10 λεπτά από κίνηση. Είναι μάλλον αληθινά γεγονότα (μαγείρεμα, μπάνιο), όχι λάθη. Ένα σύστημα στο σπίτι θα πρέπει να ξέρει πού είναι ο άνθρωπος πριν φωνάξει.
+With nobody moving, about 1 reading in 200 alarms. Right after someone enters the kitchen, about 1 in 20. Roughly two thirds of the "false" alarms come within 10 minutes of someone moving: they are probably cooking or showering, not sensor errors.
 
-## Τι άλλαξε (έκδοση 6): δωμάτιο, και δίκαιος θόρυβος
+### 5.4 Room with a head count (`run_room_monitor.py`)
 
-### Δωμάτιο με τον πραγματικό αριθμό ανθρώπων
+**What it is.** An office room with four sensor nodes measuring temperature, light and sound, plus CO2 and two motion sensors. One reading about every 30 seconds over seven days ([UCI 864](https://archive.ics.uci.edu/dataset/864)). **Every reading says how many people (0–3) were in the room**, so this is the one dataset where we know for certain whether an alarm is a real event.
 
-Τέταρτη μηχανή: ένα δωμάτιο (UCI, «Room Occupancy Estimation», https://archive.ics.uci.edu/dataset/864). Τέσσερις κόμβοι (S1–S4) μετράνε θερμοκρασία, φως και ήχο, ο S5 μετράει CO2 και οι S6, S7 είναι αισθητήρες κίνησης. Μία μέτρηση περίπου κάθε 30 δευτερόλεπτα, επτά μέρες. **Κάθε μέτρηση λέει πόσοι άνθρωποι (0–3) ήταν στο δωμάτιο.** Είναι το μόνο σύνολο με αληθινή απάντηση για το αν ένας συναγερμός είναι ψεύτικος ή αληθινό γεγονός.
+We use 13 channels. `S5_CO2_Slope` is left out because it is calculated from CO2, not measured. The two motion sensors are left out because they are on/off switches, and jitter on a switch is not physical.
 
-Τα δεδομένα είναι συμπιεσμένα στο branch `room-data`:
+**What is special.** The four nodes' lights and sounds move together (0.2–0.6), because they react to the same people. Temperature and sound flicker up and down (step autocorrelation about −0.45), which `trend` can use.
 
-```
-mkdir -p DatasetRoom
-git show origin/room-data:DatasetRoom/Occupancy_Estimation.csv.gz | gunzip > DatasetRoom/Occupancy_Estimation.csv
-python run_room_monitor.py                       # γύρω στο 1 λεπτό
-```
+**Results** (one step, learned lines):
 
-Κρατάμε 13 κανάλια. Το `S5_CO2_Slope` υπολογίζεται από το CO2, δεν μετριέται, άρα ένα ψέμα σε αυτό δεν σημαίνει τίποτα. Οι S6, S7 είναι διακόπτες (0 ή 1) και ο θόρυβος πάνω σε διακόπτη δεν είναι φυσικός.
-
-Τι βρήκαμε στα δεδομένα: τα φώτα και οι ήχοι των τεσσάρων κόμβων κουνιούνται μαζί (συσχέτιση βημάτων 0.2–0.6), γιατί αντιδρούν στους ίδιους ανθρώπους. Η θερμοκρασία και ο ήχος τρεμοπαίζουν πάνω-κάτω (αυτοσυσχέτιση βημάτων γύρω στο −0.45).
-
-Αποτελέσματα (1 βήμα, γραμμές από τα δεδομένα στο 1%, διάμεσος από τα πέντε περάσματα):
-
-| | jump, hot | jump, removal | trend, hot | trend, removal |
+| | `jump` + `hot` | `jump` + `removal` | `trend` + `hot` | `trend` + `removal` |
 |---|---|---|---|---|
-| καθαρές που ανάβουν | 0.008 | 0.008 | 0.006 | 0.009 |
-| θόρυβος 1× βήμα | 0.007 | 0.046 | 0.016 | **0.158** |
-| θόρυβος 2× βήμα | 0.266 | 0.831 | 0.263 | **0.927** |
-| θόρυβος 4× βήμα | 0.923 | 0.999 | 0.891 | **1.000** |
-| εμφανές ψέμα σε 1 | **0.506** | 0.468 | 0.495 | 0.492 |
-| εμφανές ψέμα σε 4 | 0.322 | 0.656 | 0.341 | **0.663** |
-| πιστευτό ψέμα σε 1 | 0.009 | 0.009 | **0.031** | 0.014 |
-| κολλημένο σε 1 | 0.000 | 0.000 | 0.000 | 0.000 |
+| clean readings that alarm | 0.008 | 0.008 | 0.006 | 0.009 |
+| noise 1× | 0.007 | 0.046 | 0.016 | **0.158** |
+| noise 2× | 0.266 | 0.831 | 0.263 | **0.927** |
+| noise 4× | 0.923 | 0.999 | 0.891 | **1.000** |
+| obvious lie, 1 sensor | **0.506** | 0.468 | 0.495 | 0.492 |
+| obvious lie, 4 sensors | 0.322 | 0.656 | 0.341 | **0.663** |
+| plausible lie, 1 | 0.009 | 0.009 | **0.031** | 0.014 |
+| stuck, 1 | 0.000 | 0.000 | 0.000 | 0.000 |
 
-Το `trend, removal` είναι το καλύτερο εδώ. Τα εμφανή ψέματα πιάνονται μόνο γύρω στο 50%: τις περισσότερες ώρες το δωμάτιο είναι άδειο και σκοτεινό, οπότε μια τιμή από άλλη ώρα συχνά μοιάζει με την αληθινή.
+Obvious lies are only caught about half the time: the room is empty and dark most of the time, so a reading copied from another moment often looks like the real one.
 
-Συναγερμοί σε καθαρές μετρήσεις του τεστ που δεν χρησιμοποιήθηκαν ούτε για τις γραμμές ούτε για το όριο:
+**Alarms versus the true head count** (clean test readings never used for lines or the cutoff):
 
-| | άδειο (1309 μετρήσεις) | με ανθρώπους (124) | μπήκε ή βγήκε κάποιος (14) |
+| | empty (1,309 readings) | occupied (124) | someone just came or went (14) |
 |---|---|---|---|
-| jump, hot | 0.001 | 0.056 | 0.071 |
-| jump, removal | 0.000 | 0.040 | 0.071 |
-| trend, hot | 0.000 | 0.056 | 0.071 |
-| trend, removal | 0.000 | 0.097 | 0.071 |
+| `jump` + `hot` | 0.001 | 0.056 | 0.071 |
+| `jump` + `removal` | 0.000 | 0.040 | 0.071 |
+| `trend` + `hot` | 0.000 | 0.056 | 0.071 |
+| `trend` + `removal` | 0.000 | 0.097 | 0.071 |
 
-Σε άδειο δωμάτιο δεν ανάβει σχεδόν τίποτα. Σχεδόν όλοι οι «ψεύτικοι» συναγερμοί είναι άνθρωποι στο δωμάτιο, δηλαδή αληθινά γεγονότα, όπως και στο σπίτι. Τα δείγματα με ανθρώπους στο τεστ είναι λίγα (124 και 14), οπότε αυτά τα ποσοστά είναι χοντρικά.
+In an empty room almost nothing alarms. Nearly every "false" alarm happens with people in the room, which confirms the finding from the home. The occupied samples are small (124 and 14 readings), so treat those percentages as rough.
 
-### Δύο διορθώσεις που αφορούν όλες τις μηχανές
+### 5.5 Walking with and without a brace (`run_gait_monitor.py`)
 
-Το δωμάτιο έδειξε ένα λάθος στο τεστ. Ο θόρυβος 0.25× βήμα έβγαινε «πιασμένος» 14% με `jump, hot`, και τα εμφανή ψέματα 0%. Οι θερμοκρασίες του δωματίου παίρνουν μόνο πολλαπλάσια του 0.06 βαθμού. Ο θόρυβος έφτιαχνε τιμές όπως 25.007, που κανένας πραγματικός αισθητήρας δεν δίνει, και ο έλεγχος τις έπιανε από ένα τέχνασμα των ισοπαλιών.
+**What it is.** Ten people each walked ten times in three conditions: no brace, a knee brace, and an ankle brace (both braces on the right leg). Each walk is one gait cycle of 101 points with six joint angles: ankle, knee and hip of each leg ([UCI 760](https://archive.ics.uci.edu/dataset/760)). Walking without a brace is the clean data (walks 1–7 train, 8–10 test). The braced walks are never seen until the very end.
 
-1. **Ο θόρυβος στρογγυλεύεται στην ανάλυση του αισθητήρα** (`timeseries.py`). Η ανάλυση κάθε καναλιού βγαίνει από τα καθαρά δεδομένα (το μικρότερο βήμα ανάμεσα σε διαφορετικές τιμές). Θόρυβος μικρότερος από μισό βήμα στρογγυλεύεται στο μηδέν, αφήνει την ένδειξη ίδια, και η δίκαιη βαθμολογία τον αφήνει έξω. Αυτό άλλαξε τα νούμερα θορύβου του φούρνου και του σπιτιού (οι πίνακες πιο πάνω είναι ενημερωμένοι).
-2. **Οι γραμμές από τα δεδομένα μπαίνουν ανάμεσα σε τιμές, όχι πάνω σε τιμή** (`thresholds.py`, `consistency.py`). Μια γραμμή μπαίνει στη μέση ανάμεσα στο ποσοστημόριο και στην επόμενη μεγαλύτερη καθαρή τιμή. Αν δεν υπάρχει μεγαλύτερη, μπαίνει πάνω από το ποσοστημόριο κατά το μισό του προηγούμενου κενού. Ο ρυθμός συναγερμών στα καθαρά δεδομένα δεν αλλάζει. Στο αέριο τα νούμερα κουνήθηκαν το πολύ 0.06 (οι πίνακες πιο πάνω είναι ενημερωμένοι).
+**What is special.**
+- The two legs are **near twins**: the same joint left and right moves almost in step (0.91–0.98).
+- The curves are **very smooth**: `trend` predicts the next point so well that the surprise is only 1% of a normal move. The data looks smoothed and resampled to 101 points, so it is smoother than raw sensor data would be.
+- A brace is **a real change that looks exactly like a lie on one joint**: the knee brace cuts the right knee's range from about 66° to 22°, and the ankle brace cuts the right ankle's from about 26° to 6°.
 
-## Τι άλλαξε (έκδοση 7): βάδισμα
+**Results on our corruptions** (learned lines):
 
-Πέμπτη μηχανή: γωνίες αρθρώσεων στο περπάτημα (UCI, «Multivariate Gait Data», https://archive.ics.uci.edu/dataset/760). Δέκα άνθρωποι περπάτησαν δέκα φορές σε τρεις συνθήκες: χωρίς νάρθηκα, με νάρθηκα στο γόνατο και με νάρθηκα στον αστράγαλο (και οι δύο στο δεξί πόδι). Κάθε περπάτημα είναι ένας κύκλος βάδισης σε 101 σημεία, με έξι γωνίες: αστράγαλος, γόνατο και ισχίο, αριστερά και δεξιά.
-
-Τα δεδομένα είναι συμπιεσμένα στο branch `gait-data`:
-
-```
-mkdir -p DatasetGait
-git show origin/gait-data:DatasetGait/gait.csv.gz | gunzip > DatasetGait/gait.csv
-python run_gait_monitor.py                       # γύρω στα 30 δευτερόλεπτα
-```
-
-Οι έξι γωνίες είναι τα κανάλια και τα σημεία του κύκλου είναι τα βήματα. Ένα παράθυρο δεν περνάει ποτέ από ένα περπάτημα στο επόμενο. Καθαρά δεδομένα είναι το περπάτημα χωρίς νάρθηκα: τα περπατήματα 1–7 κάθε ανθρώπου για μάθηση, τα 8–10 για τεστ. Τα περπατήματα με νάρθηκα δεν τα βλέπει ποτέ ο έλεγχος πριν το τέλος.
-
-### Τι βρήκαμε στα δεδομένα
-
-- Τα δύο πόδια είναι **σχεδόν δίδυμα**: η ίδια άρθρωση αριστερά και δεξιά κουνιέται σχεδόν μαζί (συσχέτιση βημάτων 0.91–0.98).
-- Οι καμπύλες είναι **πολύ ομαλές** (αυτοσυσχέτιση βημάτων 0.97–0.99). Η πρόβλεψη `trend` αφήνει έκπληξη μόλις 1% του βήματος. Τα δεδομένα μάλλον έχουν εξομαλυνθεί και ξαναδειγματιστεί σε 101 σημεία, οπότε είναι πολύ πιο ομαλά από ωμές μετρήσεις αισθητήρα.
-- Ο νάρθηκας είναι **αληθινή αλλαγή που μοιάζει με ψέμα σε ένα κανάλι**: στο γόνατο το εύρος του δεξιού γονάτου πέφτει από περίπου 66 σε 22 μοίρες, στον αστράγαλο το εύρος του δεξιού αστραγάλου από περίπου 26 σε 6.
-
-### Αποτελέσματα στις φθορές
-
-Γραμμές από τα δεδομένα στο 1%, διάμεσος από τα πέντε περάσματα:
-
-| | 1 σημείο, jump, removal | 1 σημείο, trend, removal | 10 σημεία, trend, hot |
+| | 1 point, `jump` + `removal` | 1 point, `trend` + `removal` | 10 points, `trend` + `hot` |
 |---|---|---|---|
-| καθαρά που ανάβουν | 0.010 | 0.011 | 0.013 |
-| θόρυβος 0.25× βήμα | 0.024 | **0.816** | **1.000** |
-| θόρυβος 1× βήμα | 0.624 | **0.955** | **1.000** |
-| εμφανές ψέμα σε 1 | 0.898 | **0.990** | **1.000** |
-| πιστευτό ψέμα σε 1 | 0.433 | **0.948** | **1.000** |
-| κολλημένο σε 1 | 0.331 | **0.953** | **0.999** |
+| clean that alarm | 0.010 | 0.011 | 0.013 |
+| noise 0.25× | 0.024 | **0.816** | **1.000** |
+| noise 1× | 0.624 | **0.955** | **1.000** |
+| obvious lie, 1 joint | 0.898 | **0.990** | **1.000** |
+| plausible lie, 1 joint | 0.433 | **0.948** | **1.000** |
+| stuck, 1 joint | 0.331 | **0.953** | **0.999** |
 
-Εδώ, για πρώτη φορά, πιάνονται και τα πιστευτά ψέματα και τα κολλημένα κανάλια. Η ομαλή καμπύλη κάνει κάθε αφύσικη γωνία να ξεχωρίζει. Αυτό είναι μάλλον πιο αισιόδοξο απ' ό,τι θα ήταν με ωμά δεδομένα.
+For the first time, plausible lies and stuck sensors are caught: on a smooth curve every unnatural kink stands out. Expect less on raw data.
 
-### Οι νάρθηκες
+**The braces** (detectors tuned on unbraced walking, learned lines). The best is `jump` + `removal` over 10 points:
 
-Τα περπατήματα με νάρθηκα περνάνε από ελέγχους ρυθμισμένους στο περπάτημα χωρίς νάρθηκα (γραμμές από τα δεδομένα). Ο καλύτερος είναι `jump, removal` σε 10 σημεία:
-
-| | συναγερμοί | λέγονται ψέμα | πρώτη άρθρωση που βγαίνει: η άρθρωση με νάρθηκα, σε όποιο πόδι | πρώτη άρθρωση που βγαίνει: ακριβώς η άρθρωση με νάρθηκα |
+| | alarms | called a lie | first joint set aside is the braced joint (either leg) | ...on the braced leg |
 |---|---|---|---|---|
-| χωρίς νάρθηκα (τεστ) | 0.012 | | | |
-| νάρθηκας γονάτου | **0.506** | 0.969 | 0.780 | 0.59 (δεξί γόνατο) |
-| νάρθηκας αστραγάλου | 0.174 | 0.988 | 0.703 | |
+| no brace (test) | 0.012 | | | |
+| knee brace | **0.506** | 0.969 | 0.780 | 0.59 (right knee) |
+| ankle brace | 0.174 | 0.988 | 0.703 | |
 
-- Ο έλεγχος βλέπει ότι μία άρθρωση διαφωνεί, το λέει ψέμα, και βρίσκει **ποια άρθρωση** στο 70–78% των φορών.
-- Συχνά όμως κατηγορεί το **υγιές** πόδι. Με δύο μόνο δίδυμους μάρτυρες, ο έλεγχος βλέπει ότι τα δύο γόνατα διαφωνούν, αλλά δεν υπάρχει τρίτος να πει ποιο έχει δίκιο.
-- Το `trend`, που πιάνει σχεδόν όλες τις φθορές, **δεν βλέπει τους νάρθηκες** (2–10% συναγερμοί). Ένα γόνατο με νάρθηκα κουνιέται λιγότερο, αλλά ομαλά, οπότε συμφωνεί με το δικό του πρόσφατο παρελθόν. Για να το δεις χρειάζεσαι το άλλο πόδι.
+- The monitor sees that one joint disagrees, calls it a lie, and finds **which joint** 70–78% of the time.
+- It often **blames the healthy leg**. With only two twin witnesses it can see that the knees disagree, but there is no third witness to say which one is right.
+- `trend`, which catches almost every artificial corruption, **barely sees the braces** (2–10% alarms). A braced knee moves less, but smoothly, so it agrees with its own recent past. You need the other leg to notice.
 
-## Πώς το τρέχεις
+---
+
+## 6. What we learned
+
+1. **Comparing sensors with each other beats judging each one alone.** It fixed whole-sensor lies on the gas array (0% → 47–85%) and noise everywhere. But it only works when sensors normally move together. In the oven they do not, and nothing can replace a missing witness.
+2. **If nothing is happening, a lie cannot be caught.** A frozen sensor in a quiet home, or a replayed quiet stretch, shows almost the true value. Lies become visible only during activity, and then the right sensor is usually named.
+3. **Many "false alarms" are real life.** Cooking in the home, people in the room, a brace on a knee. A deployed system should know the context (who is where, doing what) before it raises the alarm.
+4. **Two witnesses can tell you they disagree, not who is right.** With left/right twins the monitor finds the right joint but often the wrong leg. You need three or more independent views.
+5. **Watching each sensor's own past and comparing sensors catch different things.** `trend` catches sudden artificial faults on smooth signals, while `removal` across sensors catches slow, consistent real changes such as a brace. A good system uses both.
+6. **Test the test.** Two of our own bugs made results look better than they were: noise that produced readings no real sensor could output, and alarm lines sitting exactly on tied values. Fair scoring, resolution rounding and lines placed between values fixed them.
+7. **Sensors age.** On the gas array, a monitor learned on early batches fails on later ones. Long-running monitors need recalibration.
+
+---
+
+## 7. Which setup should I use?
+
+| If you care most about... | Use |
+|---|---|
+| A realistic false-alarm rate | `--threshold empirical` (always) |
+| Catching noise | `--stage2 removal` |
+| Catching lies on sensors that normally agree | `--stage2 removal` |
+| Naming the guilty sensor | `--stage2 removal`. It lists the sensors it set aside |
+| Catching obvious lies on *many* sensors at once | `--stage2 hot`. `removal` tends to call those noise |
+| Smooth signals or movements that persist (oven, walking) | `--detector trend` |
+| Slow, consistent real changes (a brace) | `--detector jump` with `--stage2 removal` |
+
+---
+
+## 8. Getting the data
+
+The gas data is in the repository (`Dataset/`). The other datasets live compressed on their own branches, so the code branch stays small. Unpack the ones you need from the repository root:
+
+| Dataset | Branch | Commands |
+|---|---|---|
+| Oven | `oven-data` | `mkdir -p Dataset3` then `git show origin/oven-data:Dataset3/data_X.csv.gz \| gunzip > Dataset3/data_X.csv` |
+| Home | `home-data` | `mkdir -p DatasetHome` then `git show origin/home-data:DatasetHome/database_gas.csv.gz \| gunzip > DatasetHome/database_gas.csv` and `git show origin/home-data:DatasetHome/database_pos.csv.gz \| gunzip > DatasetHome/database_pos.csv` |
+| Room | `room-data` | `mkdir -p DatasetRoom` then `git show origin/room-data:DatasetRoom/Occupancy_Estimation.csv.gz \| gunzip > DatasetRoom/Occupancy_Estimation.csv` |
+| Walking | `gait-data` | `mkdir -p DatasetGait` then `git show origin/gait-data:DatasetGait/gait.csv.gz \| gunzip > DatasetGait/gait.csv` |
+
+Run `git fetch origin oven-data home-data room-data gait-data` first if the branches are not in your clone yet. The unpacked folders are gitignored.
+
+---
+
+## 9. Running it
 
 ```
 python -m pip install -r requirements.txt
-python run_workshop_repeats.py                   # 2 splits × 2 thresholds × 2 μέθοδοι
-python run_workshop_repeats.py --split random --threshold empirical --stage2 removal
-python run_neighbor_check.py                     # ένα πέρασμα, hot και removal
-python run_roast_spikes.py                       # φούρνος, όλοι οι συνδυασμοί (θέλει το Dataset3/)
-python run_roast_spikes.py --minutes 1 --detector trend --threshold empirical --stage2 removal
-python run_home_monitor.py                       # σπίτι (θέλει το DatasetHome/)
-python run_room_monitor.py                       # δωμάτιο (θέλει το DatasetRoom/)
-python run_gait_monitor.py                       # βάδισμα (θέλει το DatasetGait/)
 ```
 
-Οι φιγούρες γράφονται ως `figures/hot_sensors_<split>_<threshold>.png` για το `hot` και `figures/hot_sensors_<split>_<threshold>_removal.png` για το `removal`.
+| Command | What it runs | Time |
+|---|---|---|
+| `python run_workshop_repeats.py` | Gas: 2 splits × 2 line types × `hot`/`removal`, five seeds, figures | ~4 min |
+| `python run_neighbor_check.py` | Gas: one quick pass, `hot` and `removal` side by side | under a minute |
+| `python run_random_catch.py` | Gas: raw catch rates for each corruption | seconds |
+| `python run_full_vs_blocks.py` | Gas: 16 per-sensor tests vs one test on all 128 numbers, with timings | seconds |
+| `python run_roast_spikes.py` | Oven: 1 and 10 minutes × `jump`/`trend` × line types × `hot`/`removal` | ~5 min |
+| `python run_home_monitor.py` | Home: same grid, then alarms by room | ~9 min |
+| `python run_room_monitor.py` | Room: same grid, then alarms by head count | ~1 min |
+| `python run_gait_monitor.py` | Walking: same grid, then the braced walks | ~30 s |
 
-Στο τέλος κάθε τρεξίματος τυπώνεται, για κάθε γραμμή του πίνακα, το μικρότερο, το μεσαίο και το μεγαλύτερο από τα πέντε περάσματα. Όταν αυτά τα τρία είναι κοντά, το αποτέλεσμα δεν κουνιέται.
+Every time-series script accepts the same options to run just part of the grid, for example:
 
-Tests:
+```
+python run_roast_spikes.py --minutes 1 --detector trend --threshold empirical --stage2 removal
+python run_home_monitor.py --steps 1 --detector jump --threshold empirical
+python run_workshop_repeats.py --split random --threshold empirical --stage2 removal
+```
+
+`--target` changes the clean false-alarm rate for learned lines (default 0.01).
+
+**Reading the output.** Each configuration prints the cutoff chosen for each seed, then a table with the min, median and max over the five seeds. A side-by-side table of medians follows. For the time-series scripts, the share of corruptions that actually changed the reading comes first: anything below 1.0 means some corruptions were invisible by construction and were left out.
+
+**Tests.**
 
 ```
 python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
+
+42 tests. Most use small synthetic data and run in a few seconds. The data-loader tests skip themselves when `Dataset/` is missing.
+
+---
+
+## 10. What is in the repository
+
+| File | What it does |
+|---|---|
+| `monitor.py` | `BlockMahalanobisMonitor` (one test per sensor block) and `FullMahalanobis` (one test on all numbers, with standardized features) |
+| `consistency.py` | `SensorRemovalCheck`: the "set sensors aside until the rest agree" count, with its own chi-square or learned lines |
+| `thresholds.py` | Learned alarm lines: one line, or jointly tuned per-sensor lines, placed between clean values |
+| `corruptions.py` | Gas corruptions: noise, feature lies, whole-sensor lies (optionally same-gas) |
+| `timeseries.py` | Shared machinery for sensors read over time: windows, `jump`/`trend` surprises, corruptions, resolution rounding, fair scoring, the five-seed experiment |
+| `data_loader.py` | Loads the gas batches; random and time-ordered splits |
+| `run_*.py` | One script per experiment (see [section 9](#9-running-it)) |
+| `tests/` | Unit tests |
+| `figures/` | Histograms of how many sensors are counted for clean, noisy and lying readings (gas) |
+
+---
+
+## 11. History of changes
+
+1. **Original.** Gas and oven, chi-square lines, `hot` count. The original reported cutoffs (10 of 16 on gas, 5 of 15 on the oven) and catch rates come from this version and are superseded.
+2. **Fairer tests.** The cutoff is tuned with the exact scoring rule. Oven noise is sized against the usual one-minute move. Time-ordered gas split, learned lines, whole-sensor and same-gas lies added.
+3. **The witness check.** `removal` added after finding that whole-sensor lies were invisible to `hot`. Features standardized (covariance condition number about 1e14 → 1e8), distances vectorized (gas run 70 s → 28 s), shared code moved into modules, tests added.
+4. **Oven rework.** Fair scoring (unchanged readings are left out), the `trend` detector, 10-minute replayed and stuck lies, and the gas monitors reused on surprise windows.
+5. **Home.** Shared time-series code moved into `timeseries.py`; home monitor and alarms-by-room analysis.
+6. **Room and two test fixes.** Room monitor with ground-truth head count. Noise is rounded to each sensor's resolution, and learned lines are placed between clean values rather than on a tied value. All tables were rerun after these fixes.
+7. **Walking.** Gait monitor and the brace analysis.
