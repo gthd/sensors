@@ -370,7 +370,8 @@ def _score(seed, features, monitors, threshold, method, target) -> dict[str, flo
 def tuned_detector(setup: Setup, minutes: int, detector: str, threshold: str, method: str, seed: int = SEEDS[0]):
     """One detector set up exactly as in ``run_experiment`` for one seed.
 
-    Returns ``(surprise, counter, cutoff, length)``. Lines come from the
+    Returns ``(surprise, counter, cutoff, length, monitors)``, where
+    ``monitors`` is ``(BlockMahalanobisMonitor, SensorRemovalCheck)``. Lines come from the
     seed's calibration half of the test period and the cutoff is tuned on
     its corruptions, so the evaluation half stays unseen.
     """
@@ -390,7 +391,7 @@ def tuned_detector(setup: Setup, minutes: int, detector: str, threshold: str, me
     counter = make_counter(monitors, method)
     groups = [(kind, surprise(w, minutes)) for _, kind, w in tune_sets]
     cutoff = _tune_cutoff(cal_features, groups, counter, monitors[0].n_blocks)
-    return surprise, counter, cutoff, length
+    return surprise, counter, cutoff, length, monitors
 
 
 def calibration_half(setup: Setup, length: int, seed: int = SEEDS[0]) -> np.ndarray:
