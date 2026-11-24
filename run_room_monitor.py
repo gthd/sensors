@@ -37,8 +37,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from corruptions import LIE_COUNTS, NOISE_SCALES
 from thresholds import DEFAULT_TARGET
-from timeseries import Setup, calibration_half, run_experiment, tuned_detector, window_starts, windows
+from timeseries import SEEDS, Setup, calibration_half, run_experiment, tuned_detector, window_starts, windows
 
 DATA_FILE = Path(__file__).resolve().parent / "DatasetRoom" / "Occupancy_Estimation.csv"
 CHANNELS = (
@@ -48,8 +49,6 @@ CHANNELS = (
     "S5_CO2",
 )
 STEP_SECONDS = 30.5
-NOISE_SCALES = (0.25, 0.50, 1.00, 2.00, 4.00)
-LIE_COUNTS = (1, 2, 4)
 EVENT_LOOKBACK = 10  # steps, about 5 minutes
 
 
@@ -114,35 +113,49 @@ def occupancy_state(occupancy: np.ndarray, ends: np.ndarray, lookback: int) -> n
 
 
 def _alarms_by_occupancy(setup: Setup, occupancy: np.ndarray) -> None:
-    """Alarms on clean, unseen test readings, split by what the people were doing."""
+    """Alarms on clean, unseen test readings, split by what the people were doing.
+
+    Same five seeds as the corruption tables. Each seed fits its lines and its
+    cutoff on its own calibration half and is scored on the other half. The
+    printed table is the median of those seeds.
+    """
     minutes = 1
     rows = []
     for detector in setup.detectors:
         for method in setup.methods:
-            surprise, counter, cutoff, length, _ = tuned_detector(setup, minutes, detector, "empirical", method)
-            n_train = int(round(0.70 * len(setup.values)))
-            starts = window_starts(setup.stamps, length, n_train, len(setup.values), setup.step_seconds)
-            starts = np.setdiff1d(starts, calibration_half(setup, length))
-            alarm, count = counter(surprise(windows(setup.values, starts, length), minutes))
-            state = occupancy_state(occupancy, starts + length - 1, EVENT_LOOKBACK)
-            for name in ("empty", "occupied", "people came or went"):
-                here = state == name
-                fired = alarm & here
-                rows.append(
-                    {
-                        "detector / stage 2": f"{detector} / {method} (cutoff {cutoff})",
-                        "state": name,
-                        "readings": int(here.sum()),
-                        "alarm rate": float(fired.sum() / max(here.sum(), 1)),
-                        "called lie": float(np.mean(count[fired] < cutoff)) if fired.any() else float("nan"),
-                    }
+            cutoffs = []
+            for seed in SEEDS:
+                surprise, counter, cutoff, length, _ = tuned_detector(
+                    setup, minutes, detector, "empirical", method, seed
                 )
-    table = pd.DataFrame(rows).set_index(["detector / stage 2", "state"])
+                cutoffs.append(int(cutoff))
+                n_train = int(round(0.70 * len(setup.values)))
+                starts = window_starts(setup.stamps, length, n_train, len(setup.values), setup.step_seconds)
+                starts = np.setdiff1d(starts, calibration_half(setup, length, seed))
+                alarm, count = counter(surprise(windows(setup.values, starts, length), minutes))
+                state = occupancy_state(occupancy, starts + length - 1, EVENT_LOOKBACK)
+                for name in ("empty", "occupied", "people came or went"):
+                    here = state == name
+                    fired = alarm & here
+                    rows.append(
+                        {
+                            "detector / stage 2": f"{detector} / {method}",
+                            "state": name,
+                            "seed": seed,
+                            "readings": int(here.sum()),
+                            "alarm rate": float(fired.sum() / max(here.sum(), 1)),
+                            "called lie": float(np.mean(count[fired] < cutoff)) if fired.any() else float("nan"),
+                        }
+                    )
+            print(f"{detector} / {method} cutoff per seed: {', '.join(str(c) for c in cutoffs)}")
+    frame = pd.DataFrame(rows)
+    table = frame.groupby(["detector / stage 2", "state"], sort=False)[["readings", "alarm rate", "called lie"]].median()
     print()
     print("=" * 78)
     print(f"Clean test readings (1 step) never used for lines or cutoff, by what the people were doing "
           f"(change within the last {EVENT_LOOKBACK} readings, about 5 minutes).")
-    print("Empirical lines. 'called lie' is the share of alarms the cutoff calls a lie rather than noise.")
+    print(f"Empirical lines. Median of seeds {SEEDS[0]}-{SEEDS[-1]}. "
+          "'called lie' is the share of alarms the cutoff calls a lie rather than noise.")
     print(table.to_string(float_format="{:.3f}".format))
 
 

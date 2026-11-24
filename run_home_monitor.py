@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from corruptions import LIE_COUNTS, NOISE_SCALES
 from thresholds import DEFAULT_TARGET
 from timeseries import (
     TRAIN_FRACTION,
@@ -51,8 +52,6 @@ DATA_DIR = Path(__file__).resolve().parent / "DatasetHome"
 CHANNELS = ("temperature", "humidity", "CO2CosIRValue", "CO2MG811Value", "MOX1", "MOX2", "MOX3", "MOX4", "COValue")
 ROOMS = ("Living room", "Bedroom", "Bathroom", "Kitchen", "Hallway")
 STEP_SECONDS = 20.0
-NOISE_SCALES = (0.25, 0.50, 1.00, 2.00, 4.00)
-LIE_COUNTS = (1, 2, 4)
 ROOM_LOOKBACK = np.timedelta64(10, "m")
 ROOM_WINDOWS = 20_000
 

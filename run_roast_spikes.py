@@ -52,14 +52,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from corruptions import LIE_COUNTS, NOISE_SCALES
 from thresholds import DEFAULT_TARGET
 from timeseries import Setup, run_experiment
 
 TEMP_LOW = 50.0
 TEMP_HIGH = 800.0
 COLUMNS = tuple(f"T_data_{chamber}_{sensor}" for chamber in range(1, 6) for sensor in range(1, 4))
-OVEN_NOISE_SCALES = (0.10, 0.25, 0.50, 1.00, 2.00, 4.00)
-THERMO_COUNTS = (1, 2, 4, 6)
 
 
 def main() -> None:
@@ -71,8 +70,8 @@ def main() -> None:
             stamps=stamps,
             step_seconds=60.0,
             step_name="minute",
-            noise_scales=OVEN_NOISE_SCALES,
-            lie_counts=THERMO_COUNTS,
+            noise_scales=NOISE_SCALES,
+            lie_counts=LIE_COUNTS,
             durations=(1, 10) if args.minutes == "both" else (int(args.minutes),),
             detectors=("jump", "trend") if args.detector == "both" else (args.detector,),
             thresholds=("chi2", "empirical") if args.threshold == "both" else (args.threshold,),

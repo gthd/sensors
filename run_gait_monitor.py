@@ -39,8 +39,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from corruptions import LIE_COUNTS, NOISE_SCALES
 from thresholds import DEFAULT_TARGET
-from timeseries import Setup, calibration_half, run_experiment, tuned_detector, window_starts, windows
+from timeseries import SEEDS, Setup, calibration_half, run_experiment, tuned_detector, window_starts, windows
 
 DATA_FILE = Path(__file__).resolve().parent / "DatasetGait" / "gait.csv"
 CHANNELS = ("left ankle", "left knee", "left hip", "right ankle", "right knee", "right hip")
@@ -50,8 +51,6 @@ TRAIN_WALKS = range(1, 8)
 TEST_WALKS = range(8, 11)
 POINTS = 101
 WALK_GAP = 1000  # seconds between walks in the made-up time stamps, so no window spans two walks
-NOISE_SCALES = (0.25, 0.50, 1.00, 2.00, 4.00)
-LIE_COUNTS = (1, 2, 3)
 
 
 def main() -> None:
@@ -116,7 +115,9 @@ def _braced_walks(setup: Setup, walks: pd.DataFrame) -> None:
     """Braced walks through detectors tuned on unbraced walking.
 
     The unbraced row uses test walks never used for the lines or the cutoff.
-    Braced walks were never seen at all.
+    Braced walks were never seen at all. Same five seeds as the corruption
+    tables: each seed tunes on its own calibration half, and the printed
+    table is the median.
     """
     n_train = int(round(0.70 * len(setup.values)))
     sets = {}
@@ -128,6 +129,7 @@ def _braced_walks(setup: Setup, walks: pd.DataFrame) -> None:
     print()
     print("=" * 78)
     print("Braced walks through detectors tuned on unbraced walking (empirical lines).")
+    print(f"Median of seeds {SEEDS[0]}-{SEEDS[-1]}.")
     print("'called lie': share of alarms called a lie. 'blamed': the joint the removal check")
     print("sets aside first, among alarms called a lie, with its share. 'braced joint, either leg':")
     print("share of those where the first joint set aside is the braced joint on either leg.")
@@ -135,36 +137,79 @@ def _braced_walks(setup: Setup, walks: pd.DataFrame) -> None:
     for minutes in setup.durations:
         for detector in setup.detectors:
             for method in setup.methods:
-                surprise, counter, cutoff, length, monitors = tuned_detector(setup, minutes, detector, "empirical", method)
-                check = monitors[1]
-                starts = window_starts(setup.stamps, length, n_train, len(setup.values), setup.step_seconds)
-                starts = np.setdiff1d(starts, calibration_half(setup, length))
-                groups = {"no brace (test)": windows(setup.values, starts, length)}
-                for name, (values, stamps) in sets.items():
-                    groups[name] = windows(values, window_starts(stamps, length, 0, len(values), 1.0), length)
-                for name, frames in groups.items():
-                    features = surprise(frames, minutes)
-                    alarm, count = counter(features)
-                    lie = alarm & (count < cutoff)
-                    row = {
-                        "points": minutes,
-                        "detector / stage 2": f"{detector} / {method} (cutoff {cutoff})",
-                        "walks": name,
-                        "alarm rate": float(alarm.mean()),
-                        "called lie": float(lie.sum() / alarm.sum()) if alarm.any() else float("nan"),
-                        "blamed": "-",
-                        "braced joint, either leg": float("nan"),
-                    }
-                    if lie.any():
-                        first = check.removal(features[lie])[1][:, 0]
-                        top = np.bincount(first, minlength=len(CHANNELS))
-                        row["blamed"] = f"{CHANNELS[int(top.argmax())]} ({top.max() / lie.sum():.0%})"
-                        if name in BRACED_JOINT:
-                            joint = np.array([c.endswith(BRACED_JOINT[name]) for c in CHANNELS])
-                            row["braced joint, either leg"] = float(joint[first].mean())
-                    rows.append(row)
-    table = pd.DataFrame(rows).set_index(["points", "detector / stage 2", "walks"])
+                cutoffs = []
+                for seed in SEEDS:
+                    surprise, counter, cutoff, length, monitors = tuned_detector(
+                        setup, minutes, detector, "empirical", method, seed
+                    )
+                    cutoffs.append(int(cutoff))
+                    check = monitors[1]
+                    starts = window_starts(setup.stamps, length, n_train, len(setup.values), setup.step_seconds)
+                    starts = np.setdiff1d(starts, calibration_half(setup, length, seed))
+                    groups = {"no brace (test)": windows(setup.values, starts, length)}
+                    for name, (values, stamps) in sets.items():
+                        groups[name] = windows(values, window_starts(stamps, length, 0, len(values), 1.0), length)
+                    for name, frames in groups.items():
+                        features = surprise(frames, minutes)
+                        alarm, count = counter(features)
+                        lie = alarm & (count < cutoff)
+                        row = {
+                            "points": minutes,
+                            "detector / stage 2": f"{detector} / {method}",
+                            "walks": name,
+                            "seed": seed,
+                            "alarm rate": float(alarm.mean()),
+                            "called lie": float(lie.sum() / alarm.sum()) if alarm.any() else float("nan"),
+                            "blamed name": "-",
+                            "blamed share": float("nan"),
+                            "braced joint, either leg": float("nan"),
+                        }
+                        if lie.any():
+                            first = check.removal(features[lie])[1][:, 0]
+                            top = np.bincount(first, minlength=len(CHANNELS))
+                            row["blamed name"] = CHANNELS[int(top.argmax())]
+                            row["blamed share"] = float(top.max() / lie.sum())
+                            if name in BRACED_JOINT:
+                                joint = np.array([c.endswith(BRACED_JOINT[name]) for c in CHANNELS])
+                                row["braced joint, either leg"] = float(joint[first].mean())
+                        rows.append(row)
+                print(f"{minutes} {detector} / {method} cutoff per seed: {', '.join(str(c) for c in cutoffs)}")
+    frame = pd.DataFrame(rows)
+    table = _median_braces(frame)
     print(table.to_string(float_format="{:.3f}".format))
+
+
+def _finite_median(values: pd.Series) -> float:
+    finite = values.dropna()
+    if finite.empty:
+        return float("nan")
+    return float(finite.median())
+
+
+def _median_braces(frame: pd.DataFrame) -> pd.DataFrame:
+    """Median rates over seeds. The blamed joint is the one named by the most seeds."""
+    rows = []
+    keys = ["points", "detector / stage 2", "walks"]
+    for key, group in frame.groupby(keys, sort=False):
+        names = group.loc[group["blamed name"] != "-", "blamed name"]
+        if names.empty:
+            blamed = "-"
+        else:
+            name = names.mode().iloc[0]
+            share = group.loc[group["blamed name"] == name, "blamed share"].median()
+            blamed = f"{name} ({share:.0%})"
+        rows.append(
+            {
+                "points": key[0],
+                "detector / stage 2": key[1],
+                "walks": key[2],
+                "alarm rate": _finite_median(group["alarm rate"]),
+                "called lie": _finite_median(group["called lie"]),
+                "blamed": blamed,
+                "braced joint, either leg": _finite_median(group["braced joint, either leg"]),
+            }
+        )
+    return pd.DataFrame(rows).set_index(keys)
 
 
 if __name__ == "__main__":

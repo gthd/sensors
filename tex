@@ -1,0 +1,502 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+%Template version as of 6/27/2024
+ 
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{xurl} % lets long URLs break at any character
+\usepackage{gensymb}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+ 
+\title{Diffuse or Localized - Making sense of disturbances in multisensor data}
+ 
+
+\author{\IEEEauthorblockN{1\textsuperscript{st} Georgios Theodorou}
+\IEEEauthorblockA{\textit{UBITECH Limited} \\
+Athens, Greece \\
+0000-0001-5413-2189}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Nikolaos Maragkos}
+\IEEEauthorblockA{\textit{UBITECH Limited} \\
+Athens, Greece \\
+0009-0005-7683-8349}}
+ 
+\maketitle
+
+\begin{abstract}
+The increasing connectivity of Cyber-Physical Systems (CPS) and Industrial Internet of Things (IIoT) infrastructures has made the integrity of sensor measurements a critical security concern, as recent attacks on refrigeration systems and energy facilities illustrate. A key challenge is to see that a multisensor reading has left its normal range and to name the sensors that account for it. We propose a two-stage monitor that learns normal behaviour from clean data, raises an alarm from a Mahalanobis score, and sets aside the smallest set of sensors that makes the remainder consistent. Those sensors are the suspects. Alarm thresholds come from clean data alone. The integer that then calls a small set localized and a large set diffuse is chosen on the same readings after a diffuse injection and a localized one have been applied, and is frozen before any reported score.
+The rule is cross-sensor consistency: sensors that normally agree act as witnesses for one another. We evaluate the monitor on five public datasets from industrial, domestic and biomechanical settings. Four of them are split in recording order. The gas array has no step from one reading to the next, so the comparison there is a shuffled split of snapshots. Either call is an indicator of spread, and the same spread can be poisoning or a sensor. Poisoning can target one sensor or every sensor, and noise can sit on one channel or on the whole array. At a low false-alarm rate, the monitor detects a diffuse injection on all five datasets, at a corpus-specific scale from $0.25\times$ to $4\times$ the usual variation. A crude one-sensor localized injection is caught on the oven, the home and the gait recordings, and about half the time in the office and on a shuffled split of the gas array, where the suspect sensor is named. Fit on the earliest gas readings and scored on the drifted hold-out, that injection is caught at 0.09. Subtler replay and stuck-at attacks stay low where the signal is quiet or the channels do not move together, and show up where the curves are smooth and neighbouring sensors agree. We further show that many apparent false alarms reflect genuine physical activity. These findings clarify when cross-sensor consistency can expose a localized disturbance and offer guidance for designing sensor redundancy in CPS.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Cyber-Physical Systems, Industrial Internet of Things, sensor data integrity, replay attacks
+\end{IEEEkeywords}
+
+
+\section{Introduction}
+
+Cyber-Physical Systems (CPS) and Industrial Internet of Things (IIoT) deployments increasingly connect sensors, controllers and actuators to enterprise networks and the cloud. This connectivity brings efficiency, but it also exposes the measurement layer to adversaries. Control decisions, safety interlocks and operator dashboards all assume that sensor readings reflect the physical process, and when that assumption fails the consequences are physical. In October and November 2026, attackers reached internet-exposed refrigeration controllers in supermarkets across France and nine other European countries, switching units to defrost mode or setting freezers to 50\,\celsius{} and forcing stores to discard food~\cite{ap2026refrigeration,thn2026secondwave}. Similar freezer failures at US military bases are being investigated as a suspected cyberattack~\cite{reuters2026pentagon}. Energy and water infrastructure has also been targeted: a December 2025 attack on the Polish energy sector disabled equipment at more than 30 renewable generation sites and shut down a steam turbine at a heat and power plant~\cite{certpl2026energy,certpl2026followup}, and intruders gained the ability to change operating parameters at five Polish water treatment plants~\cite{securityweek2026water}.
+
+Some incidents target the measurements themselves. Attackers altered the fuel levels displayed by automatic tank gauges at US gas stations, a capability that could in principle hide a leak~\cite{cnn2026tankgauges}. A 2026 campaign against internet-facing programmable logic controllers in US water and energy systems likewise manipulated the data shown on operator displays~\cite{cisa2026aa26097a}. In both cases the physical process and its reported state diverged, which is precisely the condition that monitoring must expose.
+
+Detecting that something is wrong with a set of sensor readings is only half of the problem. The disturbance may be spread across the array or confined to a few sensors. We call the first diffuse and the second localized. Those words name the spread. Poisoning can target one sensor or every sensor, and noise can sit on one channel or on the whole array, so each call can be either. A localized call names the sensors to inspect. A diffuse call points at the array. The call reports the spread and leaves the cause open.
+
+Existing approaches to sensor anomaly detection, from residual based tests to multivariate statistical and learning based detectors, focus mainly on whether an anomaly is present~\cite{giraldo2018survey,urbina2016limiting}. Fewer address attribution: deciding whether an anomaly is diffuse or confined to a few sensors, and which sensors are responsible. Attribution is particularly hard when an adversary injects values that are individually plausible~\cite{liu2009fdi}, for example by replaying previously recorded data, as Stuxnet did to conceal its sabotage of centrifuges~\cite{falliere2011stuxnet,mo2009replay}. Each tampered value then looks normal on its own, and per sensor checks cannot see it. In addition, many evaluations set alarm thresholds under Gaussian assumptions, tune them by hand, or report results on a single dataset, which makes it difficult to judge how a method behaves under realistic false-alarm budgets and across different kinds of physical processes.
+
+In this paper we approach attribution through cross sensor consistency. We treat sensors that observe the same process as witnesses to the same event. If a reading becomes consistent with normal behaviour once one or two sensors are set aside, those sensors are the localized set. A count at or above a cutoff learned for that array is called diffuse, and a smaller count is called localized. We implement this idea as a two-stage monitor. The first stage scores each reading with a Mahalanobis distance learned from clean data and raises an alarm when the score exceeds a threshold. The second stage counts how many sensors must be removed before the remaining ones agree, using a closed-form decomposition of the Mahalanobis distance that requires no refitting and returns the suspect sensors. That path is the removal kernel. The tables also report a marginal kernel. On a time series its alarm is a block over its own line, and no joint score is formed. On the gas array the alarm is the joint score, and the number of blocks over their own lines is a second step. For sensors sampled over time, the monitor operates on prediction residuals rather than raw values, so that slow, expected changes in the process do not mask or mimic a localized disturbance. Alarm thresholds are learned from held-out clean data. The diffuse-versus-localized cutoff is chosen on those same held-out rows after a diffuse injection and a localized one have been applied. Neither is tuned by hand, and neither is tuned on the rows that are later scored.
+
+We evaluate the monitor on five public datasets that span different degrees of inter-sensor correlation: a chemical gas sensor array, an industrial oven, an instrumented home, an office with ground truth occupancy, and bilateral gait measurements. Into clean data we inject a diffuse disturbance of varying magnitude and localized disturbances on one, two or four sensors, namely value substitution, replay of plausible data, and stuck-at faults. Every result is reported on data unseen during training and calibration, at a false alarm rate of about 1\%, and across five seeds.
+
+The main contributions of this paper are as follows:
+\begin{enumerate}
+  \item A two stage monitor that detects an anomalous multisensor reading from clean data and names the sensors that account for the alarm. A cutoff fit on injected disturbances then labels a small set localized and a large set diffuse.
+  \item A consistency based attribution method that takes advantage of a closed form decomposition of the Mahalanobis distance, allowing sensors to be set aside efficiently without refitting the model.
+  \item A calibration and evaluation protocol that learns alarm thresholds from clean data, sets the diffuse-versus-localized cutoff on those same readings after both injections have been applied, scores only corruptions that actually change the readings, and respects each sensor's measurement resolution.
+  \item An empirical study on five real-world datasets that characterises when cross-sensor consistency can and cannot expose a localized disturbance.
+\end{enumerate}
+
+Our results show that, at a low false-alarm rate, the monitor detects a diffuse injection on all five datasets, at a corpus-specific scale from $0.25\times$ to $4\times$ the usual variation, and catches a crude one-sensor localized injection on the oven, the home and the gait recordings. In the office that injection is caught only about half the time. On a shuffled split of the gas array it is caught at the same rate, and the sensor set aside is the substituted one. Fit on the earliest 70\% of readings and scored after the sensors have drifted, it is caught at 0.09. Subtler replay and stuck-at attacks stay low where the signal is quiet or the channels do not move together. They show up where the curves are smooth and neighbouring sensors agree, as on the gait recordings. We also find that many apparent false alarms coincide with genuine physical activity, and that sensor drift invalidates static calibration over long deployments. These findings translate into practical guidance on how much, and what kind of, sensor redundancy a CPS needs for its measurements to be verifiable.
+
+The remainder of the paper is organized as follows. Section~\ref{sec:related} reviews related work. Section~\ref{sec:data} describes the datasets. Section~\ref{sec:method} presents the methodology, including the threat model, the monitor and the evaluation protocol. Section~\ref{sec:results} reports the results, and Section~\ref{sec:discussion} discusses their implications and limitations and concludes the paper.
+
+\section{Literature Review}\label{sec:related}
+\subsection{Attack Detection in Cyber-Physical Systems}
+Research on CPS attack detection has largely followed two lines. Physics-based approaches model the expected behaviour of the process and raise an alarm when measurements deviate from the model's prediction~\cite{giraldo2018survey}. C\'ardenas et al.~\cite{cardenas2011attacks} applied this idea to a chemical process, using a linear model and change detection on its residuals, and Urbina et al.~\cite{urbina2016limiting} showed that the choice of detector and of its false-alarm threshold determines how much damage a stealthy attacker can cause without being detected. A related body of work studies what attackers can achieve against such detectors. Liu et al.~\cite{liu2009fdi} showed that false data crafted to be consistent with the system model pass the bad-data detection used in power-grid state estimation. Mo and Sinopoli~\cite{mo2009replay} showed that replayed measurements can evade standard residual-based detectors, and proposed injecting a watermarking signal into the control input to expose them. Secure state estimation goes further and recovers the true state when an unknown subset of sensors is compromised, provided that the number of attacked sensors is small enough~\cite{fawzi2014secure}.
+
+The second line is data driven. Testbed datasets such as SWaT~\cite{goh2016swat} have enabled detectors learned from normal operation, including convolutional~\cite{kravchik2018cnn} and autoencoder-based~\cite{audibert2020usad} models of multivariate sensor time series. These methods report high detection rates on their benchmarks, but they output an anomaly score rather than an explanation: they do not say whether a deviation is diffuse or localized, nor which sensors are involved. Our first stage is deliberately simple by comparison; the contribution lies in the second stage.
+
+\subsection{Sensor Fault Detection and Isolation}
+Process monitoring offers a mature toolbox for multivariate sensor data. Multivariate statistical process control flags a sample when its Hotelling $T^2$ statistic, a Mahalanobis distance from the normal operating region, or its residual from a principal-component model exceeds a control limit~\cite{macgregor1995spc}. Isolating the faulty sensor is a separate step. Dunia et al.~\cite{dunia1996faulty} identified faulty sensors by reconstructing each sensor from the others and checking which reconstruction brings the monitoring statistic back within its limit. Alcala and Qin~\cite{alcala2009rbc} formalised this idea as reconstruction-based contribution and showed that it isolates faults more reliably than conventional contribution plots.
+
+Our removal step is closely related. Removing a sensor from the Mahalanobis distance is equivalent to replacing its value by its best estimate from the remaining sensors. We differ in how the result is used. Rather than isolating a single faulty variable, we count how many sensors must be removed and use that count to decide between a diffuse disturbance and a localized one. We also evaluate this decision against an adversary who supplies plausible values, rather than against random faults alone.
+
+\subsection{Distinguishing Faults from Attacks}
+Fewer works address the distinction at the heart of this paper. Fault-tolerant sensor fusion has long exploited redundancy: Marzullo~\cite{marzullo1990tolerating} showed how to combine interval readings from redundant sensors so that the result stays correct when a bounded number of them fail, and Ivanov et al.~\cite{ivanov2014fusion} extended this setting to sensors controlled by an attacker. Park et al.~\cite{park2017transient} separated transient faults from attacks among sensors that measure the same variable, by tracking inconsistencies between pairs of sensors over time. Zhang et al.~\cite{zhang2021discrimination} discriminated replay attacks from sensor bias faults using an adaptive estimator built on a model of the system.
+
+These methods assume either redundant sensors of the same quantity or an accurate model of the system. Our monitor requires neither, because it learns the correlation structure of heterogeneous sensors from clean data. This makes it applicable where no physical model is available, but it also ties its effectiveness to how strongly the sensors are correlated, a dependence we quantify across five datasets.
+
+\section{Evaluated Datasets}\label{sec:data}
+
+
+The monitor is evaluated on five real sensor corpora. Together they cover static chemical snapshots, long industrial and domestic time series, an office trace with a known occupancy label, and human gait. In every case the detector is fit on clean recordings only. Alarm thresholds are set on clean calibration readings. The diffuse-versus-localized cutoff is chosen on those same readings after a diffuse injection and a localized one have been applied. Neither is tuned on the held-out evaluation data. The five corpora are summarised in Table~\ref{tab:datasets} and described below.
+
+\begin{table}[h]
+  \centering
+  \caption{Datasets used in the evaluation.}
+  \label{tab:datasets}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lll@{}}
+    \hline
+    Dataset   & Channels          & Record \\
+    \hline
+    Gas array & 16 MOX (128-D)    & 13{,}910 snapshots \\
+    Oven      & 15 thermometers   & 1/min, $\sim$4 yr \\
+    Home      & 9 air-quality     & 1/20\,s, 99 d \\
+    Room      & 13 channels       & $\sim$31\,s, 7 dates \\
+    Gait      & 6 joint angles    & 101 pts/cycle \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\paragraph{Gas sensor array}
+The UCI Gas Sensor Array Drift corpus records a 16-sensor metal-oxide array exposed to several gases at varying concentrations. Each sensor contributes eight features, so every reading is a 128 dimensional vector. The corpus contains 13{,}910 readings in ten batches collected over about three years. Readings are separate snapshots, ordered in time, so the monitor scores the feature values themselves rather than a time derivative. The rates compared with the other corpora come from a shuffled 70/30 split, stratified by gas, so training and test readings are drawn from the same batches. One half of the held-out rows sets the thresholds and the cutoff, and the other half is scored. Two further splits keep recording order. One fits the monitor on the earliest 70\% and holds out the last 30\%, the end of batch 8 and batches 9--10, after substantial sensor drift. The other trains on batches 1--7 and holds out batches 8--10. Gas identity is used to stratify the shuffle and to build same-gas replay faults. It is not a class label for the monitor.
+
+\paragraph{Industrial oven}
+Fifteen thermometers in five roasting chambers are logged once per minute for about four years. Consecutive readings are integer degrees, and most minutes show no change at all. Minute-to-minute moves are almost uncorrelated, including thermometers that share a chamber, while each thermometer's own trend persists for many minutes. This is the case in which sensors are poor witnesses of one another, so a fault has to be judged against each thermometer's own recent past.
+
+\paragraph{Single elder home}
+The UCI Single Elder Home Monitoring corpus (dataset 799) logs one apartment from November 2019 to February 2020. Nine air quality channels are sampled every 20 seconds: temperature, humidity, two CO\textsubscript{2} sensors, four metal-oxide gas sensors, and CO. A second file records which room the resident enters. Several of the gas sensors normally move together, and half or more of the steps are constant because the air is still. The room-entry log is never given to the detector. It is used only afterwards, to check whether alarms on clean data line up with someone moving through the home.
+
+\paragraph{Office room with a head count}
+The UCI Occupancy Estimation corpus (dataset 864) records one office on seven dates, 22--26 December 2017 and 10--11 January 2018, 10{,}129 readings in all. The usual gap between readings is about 31 seconds, and there is a gap of about fifteen days between 26 December and 10 January. Four nodes measure temperature, light, and sound. CO\textsubscript{2} and two motion sensors are also present. We keep 13 channels. The CO\textsubscript{2} slope is omitted because it is derived from the CO\textsubscript{2} reading, and the two motion channels are omitted because they are binary switches. Every row carries the number of people in the room, from zero to three. An alarm on unmodified data can be checked against this head count, as the home's room-entry log is used for the same purpose. Light and sound at the four nodes respond to the same occupants, so those channels normally agree.
+
+\paragraph{Walking with and without a brace}
+The UCI gait corpus (dataset 760) contains ten participants, each recorded for ten walks in three conditions: no brace, a knee brace, and an ankle brace, both braces on the right leg. Each walk is one gait cycle of 101 samples and six joint angles (ankle, knee, and hip of each leg). Unbraced walks 1--7 are the clean training data. Walks 8--10 are the remaining 30\%: one half sets the thresholds and the cutoff, and the other half is scored. Braced walks are held out until the end and are never used to set a threshold. Left and right joints of the same type move almost in step, and the curves are smooth, so a small kink is easy to see. A brace is a real, sustained change that appears on one joint of one leg, which is the setting used to test whether the monitor can name the affected joint.
+\section{Methodological Framework}
+\label{sec:method}
+
+The monitor learns normality from clean recordings and, for each new sample, answers two questions: whether the sample is anomalous, and which sensors account for the alarm. Fitting and the alarm threshold use clean data. The diffuse-versus-localized cutoff is an integer fit offline on a diffuse injection and a localized one, then frozen. The online path is the part that would sit next to the sensors. It does not refit that integer.
+
+\subsection{Online detector}
+Each sample is a vector $x \in \mathbb{R}^{CW}$, grouped into $C$ blocks of length $W$. On the gas array, $C{=}16$ sensors and $W{=}8$ features. On a time series, $C$ is the channel count and $W$ is the length of the residual window.
+
+Calibration on clean data stores the mean $\mu$, the per-coordinate scale, and a ridge-regularized precision $P$. The joint score is the squared Mahalanobis distance
+\begin{equation}
+d(x) = (x-\mu)^{\top} P (x-\mu).
+\label{eq:mahal}
+\end{equation}
+The evaluation compares two kernels. They share this calibration and the same cutoff, and they differ in what raises the alarm.
+
+The marginal kernel (\texttt{hot}) scores each block on its own coordinates and counts the blocks over their threshold. On a time series that count is the alarm: any block over its line raises it, and $d(x)$ is not formed. On the gas array the alarm is $d(x)$, and the count is a second step. A block that replays a genuine past reading scores as normal on its own, so the count stays at zero and a localized substitution that is plausible by itself is missed.
+
+The removal kernel starts from $d(x)$. It uses the split
+\begin{equation}
+d = d_{\setminus k} + w_k^{\top}(P_{kk})^{-1} w_k,
+\quad w = P(x-\mu),
+\label{eq:removal}
+\end{equation}
+which is the distance explained by block $k$ given the others. Blocks are set aside in that order until the remainder passes the threshold for the surviving coordinates. The number set aside is the count, and the blocks set aside are the suspects. Zero means $d(x)$ already passed, so there is no alarm. A count below the cutoff is called localized, and a count at or above it is called diffuse. Those two words name the spread. Poisoning can target one sensor or every sensor, and noise can sit on one channel or on the whole array, so each call can be either. The cutoff is an integer chosen on the calibration split after a diffuse injection and a localized one have been applied, then frozen.
+
+Equation~\eqref{eq:removal} is the hardware-relevant step. Testing a subset does not rebuild a covariance. Ranking the blocks is one matrix--vector product with $P$ plus $C$ quadratic forms of size $W$. Confirming the first $m$ suspects is a linear solve of order $mW$, and the observed localized cases use small $m$.
+
+\subsection{Temporal residual}
+Where a raw level is dominated by the operating point, the detector scores surprises rather than levels. With the \texttt{jump} residual the expected step is the training-mean step. With the \texttt{trend} residual it is a least-squares prediction from that channel's last three steps, so a persistent ramp is removed before scoring. The last $W$ surprises of a channel form one block, and both kernels run on those blocks. The trend residual is three multiply--accumulates per channel per sample. The jump residual subtracts the training-mean step.
+
+\subsection{Thresholds}
+A chi-square threshold assumes Gaussian scores and, on these recordings, alarms on far more clean samples than its nominal tail. The thresholds used in the evaluation are empirical. On a clean calibration split, each threshold is placed halfway between the target quantile and the next larger clean score, so tied coarse readings (whole degrees, fixed sensor steps) do not sit on the threshold. The default target is a 1\% clean-alarm rate. The same rule sets the per-block thresholds and the removal thresholds after $m$ blocks have been set aside.
+
+\subsection{Fault model and scoring}
+Clean evaluation samples are corrupted in place. On a time series, a diffuse injection adds independent jitter to every channel, scaled to that channel's usual step and rounded to the sensor resolution. On the gas array, the jitter is scaled to each feature's standard deviation and is not rounded to a step. A localized substitution overwrites $n$ channels with a reading from another time. A replay copies a normal-looking stretch of steps onto $n$ channels. A stuck fault freezes $n$ channels at the last true value. The gas array also uses a whole-sensor substitution, which copies all $W$ features of $n$ sensors, a same-gas copy as its quieter localized case, a stuck fault that freezes those sensors at the previous snapshot, and a feature substitution, which copies a fraction of individual coordinates. Every corpus is scored on the same grid: diffuse injections at $0.25\times$, $0.50\times$, $1\times$, $2\times$ and $4\times$, and localized substitutions on 1, 2 and 4 channels. Feature substitutions are scored on the gas array and do not set the cutoff.
+
+A detection is correct when a diffuse injection is labeled diffuse, or a localized injection raises an alarm and is labeled localized. Samples that already alarmed before corruption, and corruptions that leave the stored value unchanged, are excluded. Coarse sensors make the second exclusion large: a one-degree thermometer that did not move cannot show a one-step substitution.
+
+\subsection{Protocol}
+Each time series is split in time. The earliest 70\% fits $\mu$ and $P$. The remainder is halved into calibration and evaluation. On the calibration half, clean scores set the alarm thresholds, and the same half with a diffuse injection and a localized one applied sets the cutoff. The evaluation half produces every reported rate when it holds at most 4{,}000 windows, which is the case for the office and the gait recordings. On the oven and the home each seed keeps 4{,}000 windows from each half, and the fit uses at most 40{,}000 windows spaced through the training period. Five seeds (42--46) repeat the shuffle of the calibration and evaluation windows. The gas rates in Tables~\ref{tab:summary} and~\ref{tab:gas} use a different cut of the same size: a gas-stratified shuffle, so training and test rows come from the same batches. The earliest-70\% gas split is scored with the same rules and is reported as the drifted case. Reported rates are the median of those seeds, including the brace table and the office head-count check. The home room-entry table is not: it is one even/odd split of the hold-out.
+
+\subsection{Cost of the online kernel}
+Table~\ref{tab:cost} is the arithmetic cost of one sample after the residual is formed. Storage is the online working set, in single-precision words. Fitting and quantile estimation are offline and are not part of this kernel.
+
+\begin{table}[t]
+  \centering
+  \caption{Online cost of one sample.}
+  \label{tab:cost}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lcc@{}}
+    \hline
+    Kernel & Dominant ops & Storage \\
+    \hline
+    \texttt{hot}     & $C W^{2}$ MAC     & $C(W{+}W^{2})$ \\
+    \texttt{removal} & $(CW)^{2}$ MAC    & $(CW)^{2}$ \\
+    \texttt{trend}   & $3C$ MAC          & $O(C)$ \\
+    \hline
+  \end{tabular}
+\end{table}
+
+For the gas array ($C{=}16$, $W{=}8$), \texttt{hot} is 16 independent $8{\times}8$ quadratic forms, about $10^{3}$ multiply--accumulates and under 5\,KB. Removal is one $128{\times}128$ product, 16\,K multiply--accumulates and 64\,KB, then an $8{\times}8$ or $16{\times}16$ solve for a one- or two-sensor localized case. Both working sets fit in on-chip memory. The same formulas scale the oven, home, room, and gait monitors with their own $C$ and $W$. With $W{=}1$, those four monitors sit well below the gas array. The longest removal windows in the evaluation are the ten-minute oven ($C{=}15$, $W{=}10$), at 22{,}500 MACs and 88\,KB, and the 30-step home monitor ($C{=}9$, $W{=}30$), at 72{,}900 MACs and 285\,KB.
+
+In Section~\ref{sec:results}, we evaluate the monitor using the clean-alarm rate and the conditional detection rate per fault class. Whether the first block set aside is the braced joint is reported for the held-out braces.
+
+\section{Results}
+\label{sec:results}
+
+Rates are conditional detection rates on the evaluation split: the share of corrupted samples that were labeled as the correct kind, after dropping samples that already alarmed and corruptions that left the stored value unchanged. Thresholds are empirical, the clean-alarm target is 1\%, and each entry is the median of seeds 42--46.
+
+\begin{table}[t]
+  \centering
+  \caption{Best online kernel per corpus. Diffuse is jitter on every channel, at the stated scale. Localized is a one-channel substitution, except on the gas array, where it is a whole-sensor substitution on a shuffled split.}
+  \label{tab:summary}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}l l p{3.5cm}@{}}
+    \hline
+    Corpus & Kernel & Detection \\
+    \hline
+    Gas  & removal        & diffuse 0.99 at $0.25\times$; localized 0.45 \\
+    Oven & trend+removal  & diffuse 0.99 at $2\times$; localized 0.95 \\
+    Home & jump+removal   & diffuse 0.96 at $4\times$; localized 0.93 \\
+    Room & trend+removal  & diffuse 0.93 at $2\times$; localized 0.49 \\
+    Gait & trend+removal  & diffuse 0.96 at $1\times$; localized 0.99 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Removal is the kernel that recovers a diffuse injection on every corpus. On a shuffled split of the gas array that recovery is 0.99 at $0.25\times$, and a one-sensor localized injection is caught at 0.45. When it is caught, the sensor set aside is the substituted one. On the drifted hold-out the same injection is caught at 0.086. Replays and stuck channels stay low wherever the signal is quiet or the channels do not move together. Gait is the exception: the curves are smooth and the two legs agree, so replay and stuck faults are detected at about 0.95.
+
+\subsection{Gas sensor array}
+The other four corpora are split in recording order, earliest data for fitting and later data for scoring. The gas rates in Table~\ref{tab:gas} are a shuffled 70/30 split, stratified by gas: 9{,}736 training rows and a held-out pool of 4{,}174, drawn from the same batches. That pool is halved. Clean scores on one half set the thresholds, the same half with a diffuse injection and a localized one applied sets the cutoff, and the other half is scored. A whole-sensor substitution copies all eight features of one sensor from another real reading. Those eight numbers are ordinary on their own. The marginal count labels none of them localized. Removal, which only adds the $128{\times}128$ product in Table~\ref{tab:cost}, is what separates them.
+
+\begin{table}[t]
+  \centering
+  \caption{Gas array, empirical thresholds, shuffled split.}
+  \label{tab:gas}
+  \footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lcc@{}}
+    \hline
+    Condition & hot & removal \\
+    \hline
+    Clean alarm        & 0.007 & 0.011 \\
+    Diffuse $0.25\times$ & 0.014 & 0.990 \\
+    Diffuse $0.50\times$ & 0.377 & 1.000 \\
+    Feature loc., 5\%  & 0.000 & 0.716 \\
+    Whole-sensor, 1    & 0.000 & 0.453 \\
+    Whole-sensor, 2    & 0.000 & 0.676 \\
+    Same-gas, 1        & 0.000 & 0.357 \\
+    Stuck, 1           & 0.000 & 0.234 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Four of the five seeds set the removal cutoff to 11 and one sets it to 12, so a few sensors set aside is localized and only a count near the full array is diffuse. Removal detects a diffuse injection at 0.990 from $0.25\times$ and in full from $0.50\times$. It labels a one-sensor localized injection at 0.453 and a two-sensor one at 0.676. About 0.455 of the one-sensor cases cross the distance threshold, so the misses are rows that never alarm. When one is caught, the count is exactly 1 at 0.994 and the first sensor named is the substituted one at 1.000. The 1\% line sits near 1{,}900, and a typical held-out score is about 57. The marginal count scores every localized injection at 0.000.
+
+Fitting instead on the earliest 70\% and scoring the drifted last 30\%, the same removal catches the one-sensor localized injection at 0.086. The 1\% line on that hold-out sits near 31{,}000, against a typical training score of about 58 and a typical held-out score of about 247. Stopping at the batch boundary, training on batches 1--7 and holding out batches 8--10, catches it at 0.077. The chi-square line appears to detect them only because it alarms on 58\% of clean late readings. The array needs a fresh calibration, which is an offline refit of $\mu$ and $P$, not a larger online kernel.
+
+\subsection{Industrial oven}
+Minute-to-minute moves are almost uncorrelated, including inside one chamber, and about 82\% of minutes do not change by a whole degree. There is little cross-sensor agreement for removal to use. Persistence is strong, so the three-tap trend residual removes about 40\% of the ordinary step. The earliest 70\% holds 1{,}444{,}885 one-minute windows. The fit keeps 40{,}000 of them, spaced across that period. The later pool holds 619{,}295 windows. Each seed keeps 4{,}000 for the thresholds and the cutoff, and 4{,}000 for the rates in Table~\ref{tab:oven}. The ten-minute window is capped the same way.
+
+\begin{table}[t]
+  \centering
+  \caption{Oven, one-minute window, empirical thresholds. Columns are jump+hot, trend+hot, and trend+removal.}
+  \label{tab:oven}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lccc@{}}
+    \hline
+    Condition & j+hot & t+hot & t+rem. \\
+    \hline
+    Clean alarm   & 0.008 & 0.009 & 0.010 \\
+    Diffuse $1\times$ & 0.000 & 0.000 & 0.699 \\
+    Diffuse $2\times$ & 0.000 & 0.034 & 0.992 \\
+    Diffuse $4\times$ & 0.000 & 0.792 & 1.000 \\
+    Localized, 1  & 0.877 & 0.966 & 0.947 \\
+    Localized, 4  & 0.999 & 1.000 & 0.572 \\
+    Replay, 1     & 0.002 & 0.060 & 0.064 \\
+    Replay, 4     & 0.003 & 0.103 & 0.123 \\
+    Stuck, 1      & 0.000 & 0.032 & 0.042 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Trend plus removal is the first setting that detects a realistic diffuse injection: 0.699 at one times the usual step and 0.992 at two times. Trend plus the marginal count sets the cutoff at 5 of 15, so four thermometers stay localized (1.000). The same four under trend plus removal fall to 0.572, because that many are called diffuse. Jump plus the marginal count keeps that case at 0.999 and detects no diffuse injection at these scales. Over a ten-minute window, trend plus removal detects a diffuse injection at $1\times$ in 1.000 of cases. A one-thermometer replay stays near 0.06 and a stuck thermometer near 0.04 at one minute. At ten minutes both are under 0.01. A replayed stretch carries its own trend, and no neighboring thermometer moves with it.
+
+\subsection{Home}
+The metal-oxide channels move together, so one step is enough for an obvious single-sensor localized injection (0.93). A diffuse injection at twice the usual step needs the removal count (0.58 against 0.00 for the marginal count). At 30 steps the same injection reaches 0.77 on the marginal count and 1.00 on removal. At 30 steps and four times the usual step, both counts reach 1.00. At one step and four times, removal reaches 0.96 and the marginal count stays at 0.05. Over 30 steps, a four-sensor localized injection flips: the marginal count falls to 0.33 and removal rises to 0.96.
+
+\begin{table}[t]
+  \centering
+  \caption{Home, jump residual, empirical thresholds.}
+  \label{tab:home}
+  \footnotesize
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{@{}lcccc@{}}
+    \hline
+    Condition & \multicolumn{2}{c}{1 step} & \multicolumn{2}{c}{30 steps} \\
+              & hot & rem. & hot & rem. \\
+    \hline
+    Clean alarm   & 0.011 & 0.011 & 0.009 & 0.009 \\
+    Diffuse $2\times$ & 0.000 & 0.575 & 0.772 & 1.000 \\
+    Diffuse $4\times$ & 0.047 & 0.955 & 1.000 & 1.000 \\
+    Localized, 1  & 0.942 & 0.929 & 0.694 & 0.672 \\
+    Localized, 4  & 1.000 & 0.377 & 0.334 & 0.956 \\
+    Replay, 1     & 0.019 & 0.016 & 0.006 & 0.006 \\
+    Stuck, 1      & 0.000 & 0.001 & 0.000 & 0.001 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+A stuck channel over 30 steps is almost never visible, because the air is constant on 50--88\% of steps and the frozen value matches the true one.
+
+\begin{table}[t]
+  \centering
+  \caption{Clean home alarms from the room-entry check. Not the medians in Table~\ref{tab:home}.}
+  \label{tab:homeact}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lcc@{}}
+    \hline
+    Context & hot & removal \\
+    \hline
+    All        & 0.010 & 0.011 \\
+    No motion  & 0.004 & 0.005 \\
+    Living room & 0.035 & 0.040 \\
+    Bedroom    & 0.020 & 0.021 \\
+    Bathroom   & 0.025 & 0.030 \\
+    Kitchen    & 0.049 & 0.058 \\
+    Hallway    & 0.028 & 0.034 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+With nobody moving, about one clean sample in 200 alarms. After an entry to the kitchen, about one in 20 does. Roughly two thirds of the clean alarms fall within ten minutes of the resident moving.
+
+\subsection{Office room}
+At one step, trend plus removal detects a diffuse injection at $2\times$ with rate 0.93. A localized substitution on one channel is detected about half the time under every kernel, counting only copies that change the stored value. The room is empty and dark on most readings, so many copied readings equal the live one and those are excluded. Replay stays at or below 0.031 and stuck faults at 0.00.
+
+\begin{table}[t]
+  \centering
+  \caption{Room, one step, empirical thresholds.}
+  \label{tab:room}
+  \footnotesize
+  \setlength{\tabcolsep}{2pt}
+  \begin{tabular}{@{}lcccc@{}}
+    \hline
+    Condition & \multicolumn{2}{c}{jump} & \multicolumn{2}{c}{trend} \\
+              & hot & rem. & hot & rem. \\
+    \hline
+    Clean alarm   & 0.008 & 0.008 & 0.006 & 0.009 \\
+    Diffuse $1\times$ & 0.007 & 0.046 & 0.016 & 0.158 \\
+    Diffuse $2\times$ & 0.266 & 0.831 & 0.263 & 0.927 \\
+    Diffuse $4\times$ & 0.923 & 0.999 & 0.891 & 1.000 \\
+    Localized, 1  & 0.506 & 0.468 & 0.495 & 0.492 \\
+    Localized, 4  & 0.322 & 0.656 & 0.341 & 0.663 \\
+    Replay, 1     & 0.009 & 0.009 & 0.031 & 0.014 \\
+    Stuck, 1      & 0.000 & 0.000 & 0.000 & 0.000 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The occupancy label was never used for fitting. On clean evaluation samples the empty room (1{,}304 readings) produces essentially no alarms. The occupied room (126 readings) accounts for nearly all of them, at 0.06--0.10 depending on the kernel. A transition (20 readings) alarms at 0.05--0.15. The occupied counts are small, so those two rates are coarse, but the empty-room rate is not: unmodified samples alarm when people are present.
+
+\subsection{Gait}
+The trend residual leaves a surprise of about 1\% of a normal step, and left--right pairs correlate at 0.91--0.98. On that residual, removal over a single point detects a diffuse injection at $0.25\times$ (0.82), a localized substitution (0.99), a replay (0.95), and a stuck joint (0.95). The same faults over ten points, under trend plus the marginal count, are saturated. This corpus is smoother than a raw sampled joint trajectory, so these rates are an upper envelope for unsmoothed motion.
+
+\begin{table}[t]
+  \centering
+  \caption{Gait corruptions, empirical thresholds. Columns are one-point jump+removal, one-point trend+removal, and ten-point trend+hot.}
+  \label{tab:gait}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lccc@{}}
+    \hline
+    Condition & j+rem. & t+rem. & 10, t+hot \\
+    \hline
+    Clean alarm    & 0.010 & 0.011 & 0.013 \\
+    Diffuse $0.25\times$ & 0.024 & 0.816 & 1.000 \\
+    Diffuse $1\times$    & 0.624 & 0.955 & 1.000 \\
+    Localized, 1   & 0.892 & 0.990 & 1.000 \\
+    Replay, 1      & 0.433 & 0.948 & 1.000 \\
+    Stuck, 1       & 0.331 & 0.953 & 0.999 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+The braces are held out from every threshold. The kernel that sees them is jump plus removal over ten points, not the trend residual. A brace shortens the range smoothly (right knee from about $66^{\circ}$ to $22^{\circ}$, right ankle from about $26^{\circ}$ to $6^{\circ}$), so each joint still agrees with its own recent past and the trend kernel alarms on only 0.02--0.10 of braced cycles.
+
+\begin{table}[t]
+  \centering
+  \caption{Held-out braces, jump+removal, ten-point window. Joint is the fraction of alarms whose first block is the braced joint on either leg.}
+  \label{tab:brace}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lccc@{}}
+    \hline
+    Condition & Alarm & Localized & Joint \\
+    \hline
+    No brace    & 0.012 & --    & -- \\
+    Knee brace  & 0.506 & 0.953 & 0.780 \\
+    Ankle brace & 0.174 & 0.977 & 0.702 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+Of the knee-brace alarms, 0.95 are labeled localized and 0.78 name a knee. The ankle brace is detected less often (0.17) and, when detected, is labeled localized in 0.98 of alarms and attributed to an ankle in 0.70.
+
+\section{Implications, Limitations, and Conclusion}\label{sec:discussion}
+
+Our evaluation across five physical domains yields practical guidelines for designing verifiable Cyber-Physical Systems and deploying lightweight monitors on constrained edge hardware:
+
+\begin{itemize}
+  \item \textbf{Redundancy requires physical coupling.} Cross-sensor attribution succeeds only where channels respond to a shared physical process (such as bilateral gait, or the metal-oxide channels in the home). The gas array has that coupling. On a shuffled split a one-sensor substitution is caught at 0.45, and the sensor named is the substituted one. On the held-out batches, which have drifted, the same substitution is caught at 0.08. Where channels evolve independently, as in the multi-chamber oven, or the process is still, as in the home and the office, replay and stuck channels stay low. They show up on the gait recordings, where the curves are smooth and the two legs agree, at about 0.95. In the knee-brace experiment, 0.78 of the alarms name a knee.
+  \item \textbf{Deviation patterns indicate where an anomaly is, and leave the cause open.}
+   How many sensors deviate is an indicator of spread. The same spread can be poisoning or a sensor.
+   Poisoning can target one channel or every channel, and noise can sit on one sensor or on the whole array.
+   One or two sensors set aside can be a substituted channel or a hardware failure such as
+   drift, bias or a stuck reading~\cite{dunia1996faulty,park2017transient,zhang2021discrimination}.
+   A count at the diffuse cutoff can be interference across the array, a real process event that
+   shifts the sensors together, or a coordinated change of every channel, which can be
+   built to look physically consistent~\cite{liu2009fdi}. In both cases the pattern
+   should prompt further investigation, for example cross-checking with independent
+   measurements, physical inspection or operator knowledge.
+  \item \textbf{Quantization, drift, and human activity bound operational accuracy.} Coarse sensor resolution masks subtle stuck-at or replay attacks whenever the underlying process stays within one quantization step. Over multi-year deployments, gradual sensor drift inflates empirical thresholds and blinds static models. On the gas array the 1\% line sits near 1{,}900 when training and test readings come from the same batches, and near 31{,}000 on the drifted hold-out, so the monitor needs a periodic offline refit of $\mu$ and $P$. Finally, in human-occupied spaces, roughly two-thirds of clean alarms in the home and nearly all clean alarms in the office coincide with occupant movement, indicating that alerts should be cross-checked against occupancy or actuator logs before triggering intrusion responses.
+  \item \textbf{Suitability for SRAM-constrained edge accelerators.} Unlike deep learning detectors (such as CNNs or autoencoders) that require megabytes of parameters and millions of operations per window, our online monitor reduces detection and attribution to a static dense matrix--vector product and small $W{\times}W$ solves. On the gas array, and on every one-step window, removal stays within 16\,K MACs and 64\,KB and fits in on-chip SRAM with no runtime refit of $P$. The longest evaluated windows are the ten-minute oven, at 22{,}500 MACs and 88\,KB, and the 30-step home monitor, at 72{,}900 MACs and 285\,KB.
+\end{itemize}
+
+In summary, closed-form Mahalanobis removal names the sensors behind an alarm whenever a neighbour can object, at a small online cost. The diffuse-versus-localized label is a cutoff fit on injected examples of both, not a quantity read off clean data alone. On the four time series the split follows recording order. On the gas array the comparison split is shuffled, and the ordered hold-out shows that drift forces a refit. In ongoing work, we are mapping these kernels onto fixed-point microcontrollers and FPGA pipelines to evaluate their cycle-level latency, energy efficiency, and sensitivity to 8- and 16-bit quantization.
+\section*{Acknowledgment}
+
+We would like to acknowledge (who gives funding to Mimesis)
+
+
+
+\begin{thebibliography}{25}
+\raggedright % avoids stretched lines around long URLs
+
+\bibitem{ap2026refrigeration}
+A. Charlton and D.-A. Durbin, ``Cyberattacks disrupt refrigeration systems at European supermarkets,'' \emph{Associated Press}, via \emph{PBS NewsHour}, Oct. 13, 2026. [Online]. Available: \url{https://www.pbs.org/newshour/world/cyberattacks-disrupt-refrigeration-systems-at-european-supermarkets}
+
+\bibitem{thn2026secondwave}
+S. Khandelwal, ``New wave of refrigeration cyberattacks hits supermarkets across Europe, forcing stores to pull food,'' \emph{The Hacker News}, Nov. 3, 2026. [Online]. Available: \url{https://thehackernews.com/2026/11/second-wave-of-cyberattacks-hits.html}
+
+\bibitem{reuters2026pentagon}
+R. Satter, A. Vicens and P. Stewart, ``Exclusive: Pentagon treating military base freezer malfunctions as suspected cyberattack, officials say,'' \emph{Reuters}, Oct. 29, 2026. [Online]. Available: \url{https://theprint.in/world/exclusive-pentagon-treating-military-base-freezer-malfunctions-as-suspected-cyberattack-officials-say/3085028/}
+
+\bibitem{certpl2026energy}
+CERT Polska, ``Energy sector incident report -- 29 December 2025,'' NASK National Research Institute, Jan. 30, 2026. [Online]. Available: \url{https://cert.pl/en/posts/2026/01/incident-report-energy-sector-2025/}
+
+\bibitem{certpl2026followup}
+CERT Polska, ``Follow-up report of the December 2025 energy sector incident,'' NASK National Research Institute, Aug. 8, 2026. [Online]. Available: \url{https://cert.pl/en/posts/2026/08/incident-follow-up-report-energy-sector-2025/}
+
+\bibitem{securityweek2026water}
+E. Kovacs, ``Polish security agency reports ICS breaches at five water treatment plants,'' \emph{SecurityWeek}, May 2026. [Online]. Available: \url{https://www.securityweek.com/polish-security-agency-reports-ics-breaches-at-five-water-treatment-plants/}
+
+\bibitem{cnn2026tankgauges}
+S. Lyngaas, ``Exclusive: Hackers have breached tank readers at US gas stations; officials suspect Iran is responsible,'' \emph{CNN}, May 15, 2026. [Online]. Available: \url{https://kvia.com/politics/cnn-us-politics/2026/05/15/exclusive-hackers-have-breached-tank-readers-at-us-gas-stations-officials-suspect-iran-is-responsible/}
+
+\bibitem{cisa2026aa26097a}
+FBI, CISA, NSA, EPA, DOE and USCYBERCOM Cyber National Mission Force, ``Iranian-affiliated cyber actors exploit programmable logic controllers across US critical infrastructure,'' Joint Cybersecurity Advisory AA26-097A, Apr. 7, 2026. [Online]. Available: \url{https://www.ic3.gov/CSA/2026/260407.pdf}
+
+\bibitem{giraldo2018survey}
+J. Giraldo, D. Urbina, A. Cardenas, J. Valente, M. Faisal, J. Ruths, N. O. Tippenhauer, H. Sandberg and R. Candell, ``A survey of physics-based attack detection in cyber-physical systems,'' \emph{ACM Computing Surveys}, vol. 51, no. 4, Art. no. 76, pp. 1--36, 2018, doi: 10.1145/3203245.
+
+\bibitem{urbina2016limiting}
+D. I. Urbina, J. Giraldo, A. A. Cardenas, N. O. Tippenhauer, J. Valente, M. Faisal, J. Ruths, R. Candell and H. Sandberg, ``Limiting the impact of stealthy attacks on industrial control systems,'' in \emph{Proc. ACM SIGSAC Conf. Computer and Communications Security (CCS)}, Vienna, Austria, 2016, doi: 10.1145/2976749.2978388.
+
+\bibitem{liu2009fdi}
+Y. Liu, P. Ning and M. K. Reiter, ``False data injection attacks against state estimation in electric power grids,'' in \emph{Proc. 16th ACM Conf. Computer and Communications Security (CCS)}, Chicago, IL, USA, 2009, pp. 21--32, doi: 10.1145/1653662.1653666.
+
+\bibitem{falliere2011stuxnet}
+N. Falliere, L. O Murchu and E. Chien, ``W32.Stuxnet dossier,'' version 1.4, Symantec Security Response, Cupertino, CA, USA, Feb. 2011.
+
+\bibitem{mo2009replay}
+Y. Mo and B. Sinopoli, ``Secure control against replay attacks,'' in \emph{Proc. 47th Annual Allerton Conf. Communication, Control, and Computing}, Monticello, IL, USA, 2009, pp. 911--918, doi: 10.1109/ALLERTON.2009.5394956.
+
+\bibitem{cardenas2011attacks}
+A. A. C\'ardenas, S. Amin, Z.-S. Lin, Y.-L. Huang, C.-Y. Huang and S. Sastry, ``Attacks against process control systems: Risk assessment, detection, and response,'' in \emph{Proc. 6th ACM Symp. Information, Computer and Communications Security (ASIACCS)}, Hong Kong, China, 2011, pp. 355--366, doi: 10.1145/1966913.1966959.
+
+\bibitem{fawzi2014secure}
+H. Fawzi, P. Tabuada and S. Diggavi, ``Secure estimation and control for cyber-physical systems under adversarial attacks,'' \emph{IEEE Trans. Automatic Control}, vol. 59, no. 6, pp. 1454--1467, 2014, doi: 10.1109/TAC.2014.2303233.
+
+\bibitem{goh2016swat}
+J. Goh, S. Adepu, K. N. Junejo and A. Mathur, ``A dataset to support research in the design of secure water treatment systems,'' in \emph{Proc. 11th Int. Conf. Critical Information Infrastructures Security (CRITIS)}, ser. LNCS, vol. 10242, Springer, 2016, pp. 88--99.
+
+\bibitem{kravchik2018cnn}
+M. Kravchik and A. Shabtai, ``Detecting cyber attacks in industrial control systems using convolutional neural networks,'' in \emph{Proc. Workshop on Cyber-Physical Systems Security and PrivaCy (CPS-SPC)}, ACM, 2018, doi: 10.1145/3264888.3264896.
+
+\bibitem{audibert2020usad}
+J. Audibert, P. Michiardi, F. Guyard, S. Marti and M. A. Zuluaga, ``USAD: Unsupervised anomaly detection on multivariate time series,'' in \emph{Proc. 26th ACM SIGKDD Conf. Knowledge Discovery and Data Mining (KDD)}, 2020, doi: 10.1145/3394486.3403392.
+
+\bibitem{macgregor1995spc}
+J. F. MacGregor and T. Kourti, ``Statistical process control of multivariate processes,'' \emph{Control Engineering Practice}, vol. 3, no. 3, pp. 403--414, 1995, doi: 10.1016/0967-0661(95)00014-L.
+
+\bibitem{dunia1996faulty}
+R. Dunia, S. J. Qin, T. F. Edgar and T. J. McAvoy, ``Identification of faulty sensors using principal component analysis,'' \emph{AIChE Journal}, vol. 42, no. 10, pp. 2797--2812, 1996, doi: 10.1002/aic.690421011.
+
+\bibitem{alcala2009rbc}
+C. F. Alcala and S. J. Qin, ``Reconstruction-based contribution for process monitoring,'' \emph{Automatica}, vol. 45, no. 7, pp. 1593--1600, 2009, doi: 10.1016/j.automatica.2009.02.027.
+
+\bibitem{marzullo1990tolerating}
+K. Marzullo, ``Tolerating failures of continuous-valued sensors,'' \emph{ACM Trans. Computer Systems}, vol. 8, no. 4, pp. 284--304, 1990, doi: 10.1145/128733.128735.
+
+\bibitem{ivanov2014fusion}
+R. Ivanov, M. Pajic and I. Lee, ``Attack-resilient sensor fusion,'' in \emph{Proc. Design, Automation and Test in Europe Conf. (DATE)}, 2014, pp. 1--6, doi: 10.7873/DATE.2014.067.
+
+\bibitem{park2017transient}
+J. Park, R. Ivanov, J. Weimer, M. Pajic, S. H. Son and I. Lee, ``Security of cyber-physical systems in the presence of transient sensor faults,'' \emph{ACM Trans. Cyber-Physical Systems}, vol. 1, no. 3, 2017, doi: 10.1145/3064809.
+
+\bibitem{zhang2021discrimination}
+K. Zhang, C. Keliris, M. M. Polycarpou and T. Parisini, ``Discrimination between replay attacks and sensor faults for cyber-physical systems via event-triggered communication,'' \emph{European Journal of Control}, vol. 62, pp. 47--56, 2021, doi: 10.1016/j.ejcon.2021.06.026.
+
+\end{thebibliography}
+
+\end{document}

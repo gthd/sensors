@@ -78,6 +78,24 @@ def split_random_indices(
     return np.asarray(train_idx), np.asarray(test_idx)
 
 
+def split_ordered_indices(
+    n_rows: int,
+    train_fraction: float = TRAIN_FRACTION,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Earliest rows train, the rest is the test pool. Returns (train_idx, test_idx).
+
+    Rows stay in recording order. Nothing is shuffled and nothing is stratified
+    by gas. ``train_fraction`` of the rows (default 70%) fit the monitor.
+    """
+    if not 0.0 < train_fraction < 1.0:
+        raise ValueError("train_fraction must lie strictly between 0 and 1")
+    n_train = int(round(float(train_fraction) * int(n_rows)))
+    if n_train <= 0 or n_train >= int(n_rows):
+        raise ValueError(f"train_fraction={train_fraction} leaves an empty side of {n_rows} rows")
+    idx = np.arange(int(n_rows))
+    return idx[:n_train], idx[n_train:]
+
+
 def split_temporal_indices(
     batch_ids: np.ndarray,
     train_batches: int = TEMPORAL_TRAIN_BATCHES,
